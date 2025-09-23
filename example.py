@@ -1,10 +1,11 @@
+import argparse
 import os
 from nanovllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 
 
-def main():
-    path = os.path.expanduser("/home/kason/models/qwen06b")
+def main(args):
+    path = os.path.expanduser(args.model)
     tokenizer = AutoTokenizer.from_pretrained(path)
     llm = LLM(path, enforce_eager=True, tensor_parallel_size=1)
 
@@ -31,4 +32,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    args = argparse.ArgumentParser()
+    args.add_argument("--model", type=str, default="/home/kason/models/qwen06b")
+    args = args.parse_args()
+    main(args)
