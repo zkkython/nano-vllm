@@ -10,6 +10,7 @@ class RMSNorm(nn.Module):
         eps: float = 1e-6,
     ) -> None:
         super().__init__()
+        self.hidden_size = hidden_size
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(hidden_size))
 
@@ -19,7 +20,7 @@ class RMSNorm(nn.Module):
         x: torch.Tensor,
     ) -> torch.Tensor:
         orig_dtype = x.dtype
-        x = x.float()
+        x = x.to(torch.float32)
         var = x.pow(2).mean(dim=-1, keepdim=True)
         x.mul_(torch.rsqrt(var + self.eps))
         x = x.to(orig_dtype).mul_(self.weight)
@@ -32,7 +33,7 @@ class RMSNorm(nn.Module):
         residual: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         orig_dtype = x.dtype
-        x = x.float().add_(residual.float())
+        x = x.to(torch.float32).add_(residual.to(torch.float32))
         residual = x.to(orig_dtype)
         var = x.pow(2).mean(dim=-1, keepdim=True)
         x.mul_(torch.rsqrt(var + self.eps))
