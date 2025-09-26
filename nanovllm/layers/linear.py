@@ -15,7 +15,7 @@ class LinearBase(nn.Module):
         self,
         input_size: int,
         output_size: int,
-        tp_dim: int | None = None,
+        tp_dim: int | None = None, # tp_dim = 0代表列切，tp_dim = 1代表行切
     ):
         super().__init__()
         self.input_size = input_size
