@@ -43,6 +43,7 @@ def demo_f_linear():
     print("示例 3: 单样本输入")
     single_input = torch.randn(3)  # in_features=3
     output_single = F.linear(single_input, weight, bias)
+    print(f"单样本输入: {single_input}")
     print(f"单样本输入形状: {single_input.shape}")
     print(f"输出形状: {output_single.shape}")
     print(f"输出: {output_single}\n")
