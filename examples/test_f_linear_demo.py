@@ -52,6 +52,7 @@ def demo_f_linear():
     print("示例 4: 高维输入 (序列数据)")
     seq_input = torch.randn(2, 5, 3)  # batch_size=2, seq_len=5, in_features=3
     output_seq = F.linear(seq_input, weight, bias)
+
     print(f"序列输入形状: {seq_input.shape}")
     print(f"输出形状: {output_seq.shape}")
     print(f"输出:\n{output_seq}\n")
