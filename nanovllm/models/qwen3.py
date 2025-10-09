@@ -6,7 +6,11 @@ from transformers import Qwen3Config
 from nanovllm.layers.activation import SiluAndMul
 from nanovllm.layers.attention import Attention
 from nanovllm.layers.layernorm import RMSNorm
-from nanovllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
+from nanovllm.layers.linear import (
+    QKVParallelLinear,
+    MergedColumnParallelLinear,
+    RowParallelLinear,
+)
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 
@@ -27,27 +31,31 @@ class Qwen3Attention(nn.Module):
     ) -> None:
         super().__init__()
         tp_size = dist.get_world_size()
-        self.total_num_heads = num_heads
+        self.total_num_heads = num_heads  # 16
         assert self.total_num_heads % tp_size == 0
-        self.num_heads = self.total_num_heads // tp_size
-        self.total_num_kv_heads = num_kv_heads
+        self.num_heads = (
+            self.total_num_heads // tp_size
+        )  # 16/tp_size 如果是8，那么num_heads = 16/8 = 2
+        self.total_num_kv_heads = num_kv_heads  # 8
         assert self.total_num_kv_heads % tp_size == 0
-        self.num_kv_heads = self.total_num_kv_heads // tp_size
-        self.head_dim = head_dim or hidden_size // self.total_num_heads
-        self.q_size = self.num_heads * self.head_dim
-        self.kv_size = self.num_kv_heads * self.head_dim
+        self.num_kv_heads = (
+            self.total_num_kv_heads // tp_size
+        )  # 8/tp_size 如果是8，那么num_kv_heads = 8/8 = 1
+        self.head_dim = head_dim or hidden_size // self.total_num_heads  # 128
+        self.q_size = self.num_heads * self.head_dim  # 2 * 128 = 256
+        self.kv_size = self.num_kv_heads * self.head_dim  # 1 * 128 = 128
         self.scaling = self.head_dim**-0.5
 
         self.qkv_proj = QKVParallelLinear(
-            hidden_size,
-            self.head_dim,
-            self.total_num_heads,
-            self.total_num_kv_heads,
-            bias=qkv_bias,
+            hidden_size,  # 1024
+            self.head_dim,  # 128
+            self.total_num_heads,  # 16
+            self.total_num_kv_heads,  # 8
+            bias=qkv_bias,  # False
         )
         self.o_proj = RowParallelLinear(
-            self.total_num_heads * self.head_dim,
-            hidden_size,
+            self.total_num_heads * self.head_dim,  # 16 * 128 = 2048
+            hidden_size,  # 1024
             bias=False,
         )
         self.rotary_emb = get_rope(
@@ -71,16 +79,36 @@ class Qwen3Attention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
+        # hidden_states shape: (seq1_len+seq2_len+..+seq_bs_len, hidden_size=1024)
+        # 单rank上的qkv:  (seq1_len+seq2_len+..+seq_bs_len, hidden_size=1024) * (hidden_size, 512) = (seq1_len+seq2_len+..+seq_bs_len, 512)
         qkv = self.qkv_proj(hidden_states)
+        # 切分拆解出q,k,v的矩阵，
+        # 每个rank上面的q矩阵shape: (seq1_len+seq2_len+..+seq_bs_len, 256),
+        # k矩阵shape: (seq1_len+seq2_len+..+seq_bs_len, 128),
+        # v矩阵shape: (seq1_len+seq2_len+..+seq_bs_len, 128)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q_by_head = q.view(-1, self.num_heads, self.head_dim)
+        # q_by_head shape: (seq1_len+seq2_len+..+seq_bs_len, 2, 128)
+        q_by_head = q.view(
+            -1, self.num_heads, self.head_dim
+        )  # tp8的时候单rank的num_heads = 16/tp_size = 2
+        # q_by_head 经过RMSNorm归一化 shape: (seq1_len+seq2_len+..+seq_bs_len, 2, 128)
         q_by_head = self.q_norm(q_by_head)
+        # q矩阵shape: (seq1_len+seq2_len+..+seq_bs_len, 256)
         q = q_by_head.view(q.shape)
+        # k_by_head shape: (seq1_len+seq2_len+..+seq_bs_len, 1, 128)
         k_by_head = k.view(-1, self.num_kv_heads, self.head_dim)
+        # k_by_head 经过RMSNorm归一化 shape: (seq1_len+seq2_len+..+seq_bs_len, 1, 128)
         k_by_head = self.k_norm(k_by_head)
+        # k矩阵shape: (seq1_len+seq2_len+..+seq_bs_len, 128)
         k = k_by_head.view(k.shape)
+        # q，k矩阵进行旋转位置编码，
         q, k = self.rotary_emb(positions, q, k)
+        # q,k,v 送入attention计算，输出o shape: (seq1_len+seq2_len+..+seq_bs_len, 256)
         o = self.attn(q, k, v)
+
+        # o_proj: RowParallelLinear, tp8时其weight 是（1024， 256），
+        # 所以o @ weight.T = (seq1_len+seq2_len+..+seq_bs_len, 256) @ (256, 1024) = (seq1_len+seq2_len+..+seq_bs_len, 1024)
+        # output shape: (seq1_len+seq2_len+..+seq_bs_len, 1024)， o_proj是行并行，在forward中会执行all_reduce动作，来获取全量SUM的结果
         output = self.o_proj(o)
         return output
 
@@ -122,15 +150,15 @@ class Qwen3DecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.self_attn = Qwen3Attention(
-            hidden_size=config.hidden_size,
-            num_heads=config.num_attention_heads,
-            num_kv_heads=config.num_key_value_heads,
-            max_position=config.max_position_embeddings,
-            rms_norm_eps=config.rms_norm_eps,
-            qkv_bias=getattr(config, 'attention_bias', False),
-            head_dim=getattr(config, 'head_dim', None),
-            rope_theta=getattr(config, "rope_theta", 1000000),
-            rope_scaling=getattr(config, "rope_scaling", None),
+            hidden_size=config.hidden_size,  # 1024
+            num_heads=config.num_attention_heads,  # 16
+            num_kv_heads=config.num_key_value_heads,  # 8
+            max_position=config.max_position_embeddings,  # 40960
+            rms_norm_eps=config.rms_norm_eps,  # 1e-06
+            qkv_bias=getattr(config, "attention_bias", False),  # false
+            head_dim=getattr(config, "head_dim", None),  # 128
+            rope_theta=getattr(config, "rope_theta", 1000000),  # 1000000
+            rope_scaling=getattr(config, "rope_scaling", None),  # null
         )
         self.mlp = Qwen3MLP(
             hidden_size=config.hidden_size,
@@ -138,7 +166,9 @@ class Qwen3DecoderLayer(nn.Module):
             hidden_act=config.hidden_act,
         )
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
 
     def forward(
         self,
@@ -164,8 +194,12 @@ class Qwen3Model(nn.Module):
         config: Qwen3Config,
     ) -> None:
         super().__init__()
-        self.embed_tokens = VocabParallelEmbedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.embed_tokens = VocabParallelEmbedding(
+            config.vocab_size, config.hidden_size
+        )
+        self.layers = nn.ModuleList(
+            [Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)]
+        )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
@@ -190,10 +224,7 @@ class Qwen3ForCausalLM(nn.Module):
         "up_proj": ("gate_up_proj", 1),
     }
 
-    def __init__(
-        self,
-        config: Qwen3Config
-    ) -> None:
+    def __init__(self, config: Qwen3Config) -> None:
         super().__init__()
         self.model = Qwen3Model(config)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
