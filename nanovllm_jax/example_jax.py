@@ -60,9 +60,9 @@ def main(args):
     # Prepare prompts
     prompts = [
         "Hello, I am Qwen3, a large language model.",
-        "The future of artificial intelligence is",
-        "Explain quantum computing in simple terms:",
-        "Write a short story about a robot learning to paint:",
+        # "The future of artificial intelligence is",
+        # "Explain quantum computing in simple terms:",
+        # "Write a short story about a robot learning to paint:",
     ]
     
     # Apply chat template if available

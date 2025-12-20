@@ -1,0 +1,1146 @@
+model config = 
+Qwen2VLConfig {
+  "architectures": [
+    "Qwen2VLForConditionalGeneration"
+  ],
+  "attention_dropout": 0.0,
+  "bos_token_id": 151643,
+  "dtype": "bfloat16",
+  "eos_token_id": 151645,
+  "hidden_act": "silu",
+  "hidden_size": 1536,
+  "image_token_id": 151655,
+  "initializer_range": 0.02,
+  "intermediate_size": 8960,
+  "max_position_embeddings": 32768,
+  "max_window_layers": 28,
+  "model_type": "qwen2_vl",
+  "num_attention_heads": 12,
+  "num_hidden_layers": 28,
+  "num_key_value_heads": 2,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": {
+    "mrope_section": [
+      16,
+      24,
+      24
+    ],
+    "rope_type": "default",
+    "type": "default"
+  },
+  "rope_theta": 1000000.0,
+  "sliding_window": 32768,
+  "text_config": {
+    "architectures": [
+      "Qwen2VLForConditionalGeneration"
+    ],
+    "attention_dropout": 0.0,
+    "bos_token_id": 151643,
+    "dtype": "bfloat16",
+    "eos_token_id": 151645,
+    "hidden_act": "silu",
+    "hidden_size": 1536,
+    "image_token_id": null,
+    "initializer_range": 0.02,
+    "intermediate_size": 8960,
+    "layer_types": [
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention"
+    ],
+    "max_position_embeddings": 32768,
+    "max_window_layers": 28,
+    "model_type": "qwen2_vl_text",
+    "num_attention_heads": 12,
+    "num_hidden_layers": 28,
+    "num_key_value_heads": 2,
+    "rms_norm_eps": 1e-06,
+    "rope_scaling": {
+      "mrope_section": [
+        16,
+        24,
+        24
+      ],
+      "rope_type": "default",
+      "type": "default"
+    },
+    "rope_theta": 1000000.0,
+    "sliding_window": null,
+    "tie_word_embeddings": true,
+    "use_cache": true,
+    "use_sliding_window": false,
+    "video_token_id": null,
+    "vision_end_token_id": 151653,
+    "vision_start_token_id": 151652,
+    "vision_token_id": 151654,
+    "vocab_size": 151936
+  },
+  "transformers_version": "4.56.2",
+  "use_cache": true,
+  "use_sliding_window": false,
+  "video_token_id": 151656,
+  "vision_config": {
+    "depth": 32,
+    "embed_dim": 1280,
+    "hidden_act": "quick_gelu",
+    "hidden_size": 1536,
+    "in_channels": 3,
+    "in_chans": 3,
+    "initializer_range": 0.02,
+    "mlp_ratio": 4,
+    "model_type": "qwen2_vl",
+    "num_heads": 16,
+    "patch_size": 14,
+    "spatial_merge_size": 2,
+    "spatial_patch_size": 14,
+    "temporal_patch_size": 2
+  },
+  "vision_end_token_id": 151653,
+  "vision_start_token_id": 151652,
+  "vision_token_id": 151654,
+  "vocab_size": 151936
+}
+
+================================================================================
+[Qwen2-VL 模型整体结构]
+Qwen2VLForConditionalGeneration(
+  (model): Qwen2VLModel(
+    (visual): Qwen2VisionTransformerPretrainedModel(
+      (patch_embed): PatchEmbed(
+        (proj): Conv3d(3, 1280, kernel_size=(2, 14, 14), stride=(2, 14, 14), bias=False)
+      )
+      (rotary_pos_emb): VisionRotaryEmbedding()
+      (blocks): ModuleList(
+        (0-31): 32 x Qwen2VLVisionBlock(
+          (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+          (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+          (attn): VisionAttention(
+            (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+            (proj): Linear(in_features=1280, out_features=1280, bias=True)
+          )
+          (mlp): VisionMlp(
+            (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+            (act): QuickGELUActivation()
+            (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+          )
+        )
+      )
+      (merger): PatchMerger(
+        (ln_q): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+        (mlp): Sequential(
+          (0): Linear(in_features=5120, out_features=5120, bias=True)
+          (1): GELU(approximate='none')
+          (2): Linear(in_features=5120, out_features=1536, bias=True)
+        )
+      )
+    )
+    (language_model): Qwen2VLTextModel(
+      (embed_tokens): Embedding(151936, 1536)
+      (layers): ModuleList(
+        (0-27): 28 x Qwen2VLDecoderLayer(
+          (self_attn): Qwen2VLAttention(
+            (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+            (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+            (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+            (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+            (rotary_emb): Qwen2VLRotaryEmbedding()
+          )
+          (mlp): Qwen2MLP(
+            (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+            (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+            (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+            (act_fn): SiLU()
+          )
+          (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+          (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+        )
+      )
+      (norm): Qwen2RMSNorm((1536,), eps=1e-06)
+      (rotary_emb): Qwen2VLRotaryEmbedding()
+    )
+  )
+  (lm_head): Linear(in_features=1536, out_features=151936, bias=False)
+)
+
+================================================================================
+[按层打印 - 文本解码器 layers]
+Text Layer 0: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 1: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 2: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 3: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 4: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 5: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 6: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 7: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 8: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 9: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 10: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 11: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 12: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 13: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 14: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 15: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 16: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 17: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 18: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 19: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 20: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 21: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 22: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 23: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 24: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 25: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 26: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+Text Layer 27: Qwen2VLDecoderLayer
+Qwen2VLDecoderLayer(
+  (self_attn): Qwen2VLAttention(
+    (q_proj): Linear(in_features=1536, out_features=1536, bias=True)
+    (k_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (v_proj): Linear(in_features=1536, out_features=256, bias=True)
+    (o_proj): Linear(in_features=1536, out_features=1536, bias=False)
+    (rotary_emb): Qwen2VLRotaryEmbedding()
+  )
+  (mlp): Qwen2MLP(
+    (gate_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (up_proj): Linear(in_features=1536, out_features=8960, bias=False)
+    (down_proj): Linear(in_features=8960, out_features=1536, bias=False)
+    (act_fn): SiLU()
+  )
+  (input_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+  (post_attention_layernorm): Qwen2RMSNorm((1536,), eps=1e-06)
+)
+
+================================================================================
+[按层打印 - 视觉编码器 blocks（如存在）]
+Vision Block 0: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 1: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 2: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 3: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 4: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 5: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 6: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 7: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 8: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 9: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 10: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 11: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 12: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 13: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 14: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 15: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 16: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 17: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 18: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 19: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 20: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 21: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 22: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 23: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 24: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 25: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 26: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 27: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 28: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 29: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 30: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
+Vision Block 31: Qwen2VLVisionBlock
+Qwen2VLVisionBlock(
+  (norm1): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (norm2): LayerNorm((1280,), eps=1e-06, elementwise_affine=True)
+  (attn): VisionAttention(
+    (qkv): Linear(in_features=1280, out_features=3840, bias=True)
+    (proj): Linear(in_features=1280, out_features=1280, bias=True)
+  )
+  (mlp): VisionMlp(
+    (fc1): Linear(in_features=1280, out_features=5120, bias=True)
+    (act): QuickGELUActivation()
+    (fc2): Linear(in_features=5120, out_features=1280, bias=True)
+  )
+)
