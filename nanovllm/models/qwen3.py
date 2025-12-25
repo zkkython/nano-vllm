@@ -1,6 +1,6 @@
-import torch
-from torch import nn
-import torch.distributed as dist
+import torch  # pyright: ignore[reportMissingImports]
+from torch import nn  # pyright: ignore[reportMissingImports]
+import torch.distributed as dist  # pyright: ignore[reportMissingImports]
 from transformers import Qwen3Config
 
 from nanovllm.layers.activation import SiluAndMul
