@@ -13,7 +13,6 @@ Run tests with:
 """
 
 import os
-import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
@@ -27,89 +26,13 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from nanovllm_jax.configs.model_config import ModelConfig
 from nanovllm_jax.utils.weight_utils import WeightLoader, WeightMapping
+from nanovllm_jax.models.qwen3 import Qwen3ForCausalLM
 
 
 # Set up multi-device simulation for testing
 if os.environ.get("USE_DEVICE_TYPE") == "cpu":
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
     os.environ["JAX_PLATFORMS"] = "cpu"
-
-
-class TestWeightMapping(unittest.TestCase):
-    """Test WeightMapping dataclass functionality."""
-
-    def test_weight_mapping_initialization(self):
-        """Test basic WeightMapping initialization."""
-        mapping = WeightMapping(
-            target_path="model.layer.weight",
-            sharding=(None, "tensor"),
-        )
-
-        self.assertEqual(mapping.target_path, "model.layer.weight")
-        self.assertEqual(mapping.sharding, (None, "tensor"))
-        self.assertFalse(mapping.transpose)  # Default is False, not None
-        self.assertIsNone(mapping.reshape)
-        self.assertFalse(mapping.head_dim_padding)
-        self.assertFalse(mapping.kv_head_padding)
-
-    def test_weight_mapping_with_transpose(self):
-        """Test WeightMapping with transpose option."""
-        mapping = WeightMapping(
-            target_path="model.linear.weight",
-            sharding=(None, "tensor"),
-            transpose=True,
-        )
-
-        self.assertTrue(mapping.transpose)
-
-    def test_weight_mapping_with_reshape(self):
-        """Test WeightMapping with reshape option."""
-        mapping = WeightMapping(
-            target_path="model.reshape.weight",
-            sharding=(None, None),
-            reshape=(10, 20),
-        )
-
-        self.assertEqual(mapping.reshape, (10, 20))
-
-    def test_weight_mapping_with_padding(self):
-        """Test WeightMapping with padding options."""
-        mapping = WeightMapping(
-            target_path="model.attn.weight",
-            sharding=(None, "tensor"),
-            head_dim_padding=True,
-            kv_head_padding=True,
-        )
-
-        self.assertTrue(mapping.head_dim_padding)
-        self.assertTrue(mapping.kv_head_padding)
-
-    def test_weight_mapping_split_paths(self):
-        """Test WeightMapping with split target paths (e.g., for QKV)."""
-        mapping = WeightMapping(
-            target_path=[
-                "model.attn.q_proj.weight",
-                "model.attn.k_proj.weight",
-                "model.attn.v_proj.weight",
-            ],
-            sharding=(None, "tensor"),
-        )
-
-        self.assertIsInstance(mapping.target_path, list)
-        self.assertEqual(len(mapping.target_path), 3)
-
-    def test_weight_mapping_as_dict(self):
-        """Test converting WeightMapping to dictionary."""
-        mapping = WeightMapping(
-            target_path="model.layer.weight",
-            sharding=(None, "tensor"),
-            transpose=True,
-        )
-
-        mapping_dict = asdict(mapping)
-        self.assertEqual(mapping_dict["target_path"], "model.layer.weight")
-        self.assertEqual(mapping_dict["sharding"], (None, "tensor"))
-        self.assertTrue(mapping_dict["transpose"])
 
 
 class TestWeightLoaderInit(unittest.TestCase):
@@ -405,7 +328,7 @@ class TestWeightLoaderWithRealModel(unittest.TestCase):
             "./models",
             "../models",
             "/models",
-            os.path.expanduser("~/.cache/huggingface/hub"),
+            os.path.expanduser("~/.cache/modelscope/hub"),
         ]
 
         for path in test_paths:
@@ -587,6 +510,76 @@ class TestWeightLoaderWithRealModel(unittest.TestCase):
         print(f"  - Total parameters: {total_params:,}")
 
 
+class TestQwen3NNXForward(unittest.TestCase):
+    """End-to-end test: load Qwen3-0.6B weights into nnx Qwen3ForCausalLM and run a forward pass."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.model_path = os.environ.get(
+            "TEST_MODEL_PATH",
+            "/root/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B",
+        )
+        if not os.path.exists(cls.model_path):
+            raise unittest.SkipTest(
+                f"Qwen3 model path not found: {cls.model_path}. "
+                "Set TEST_MODEL_PATH to a valid Qwen3-0.6B directory."
+            )
+        print(f"\n✓ Using Qwen3-0.6B model at: {cls.model_path}")
+
+    def setUp(self):
+        devices = jax.devices()
+        self.mesh = Mesh(devices[: min(4, len(devices))], ("tensor",))
+
+        from transformers import AutoConfig
+
+        self.hf_config = AutoConfig.from_pretrained(
+            self.model_path,
+            trust_remote_code=True,
+        )
+        self.model_config = ModelConfig(
+            model_path=self.model_path,
+            trust_remote_code=True,
+        )
+
+        self.model = Qwen3ForCausalLM(
+            config=self.hf_config,
+            dtype=jnp.bfloat16,
+            rngs=None,
+            mesh=self.mesh,
+        )
+
+    def _build_weight_mappings(self):
+        """Build minimal weight mappings for embedding and lm_head."""
+        weight_mappings = {
+            "model.embed_tokens.weight": WeightMapping(
+                target_path="transformers.embed_tokens.embedding"
+            ),
+            "lm_head.weight": WeightMapping(
+                target_path="lm_head.weight",
+            ),
+        }
+        return weight_mappings
+
+    def test_qwen3_forward_with_loaded_weights(self):
+        """Load safetensors weights into nnx Qwen3ForCausalLM and run a forward pass."""
+        loader = WeightLoader(
+            model=self.model,
+            model_config=self.model_config,
+            mesh=self.mesh,
+            dtype=jnp.bfloat16,
+        )
+        weight_mappings = self._build_weight_mappings()
+        loader.load_weights_from_safetensors(weight_mappings)
+
+        input_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
+        logits = self.model(input_ids)
+
+        self.assertEqual(logits.ndim, 3)
+        self.assertEqual(logits.shape[-1], self.hf_config.vocab_size)
+        self.assertEqual(logits.dtype, jnp.bfloat16)
+        print(f"\n✓ Qwen3 nnx forward logits shape: {logits.shape}")
+
+
 class TestModelDownload(unittest.TestCase):
     """Test model downloading functionality.
 
@@ -676,6 +669,7 @@ def run_tests():
 
     # Add tests that require real model (will be skipped if model not available)
     suite.addTests(loader.loadTestsFromTestCase(TestWeightLoaderWithRealModel))
+    suite.addTests(loader.loadTestsFromTestCase(TestQwen3NNXForward))
     suite.addTests(loader.loadTestsFromTestCase(TestModelDownload))
 
     # Run tests

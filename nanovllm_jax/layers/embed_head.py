@@ -2,6 +2,7 @@ from flax.typing import PromoteDtypeFn
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from flax import linen as nn
 from typing import Optional
 from flax.nnx.nn import dtypes
 from flax.nnx.nn.linear import default_embed_init
@@ -44,7 +45,7 @@ class Embed(nnx.Module):
             rngs: Random number generator state for parameter initialization.
         """
         self.embedding = nnx.Param(
-            nnx.with_partitioning(default_embed_init, (None, None))(
+            default_embed_init(
                 jax.random.PRNGKey(0), (num_embeddings, features), param_dtype
             )
         )
@@ -65,12 +66,12 @@ class Embed(nnx.Module):
           with an additional `features` dimension appended.
         """
         if not jnp.issubdtype(inputs.dtype, jnp.integer):
-            raise ValueError(
-                "Input type must be an integer or unsigned integer.")
+            raise ValueError("Input type must be an integer or unsigned integer.")
         # Use take because fancy indexing numpy arrays with JAX indices does not
         # work correctly.
         (embedding,) = self.promote_dtype(
-            (self.embedding.value,), dtype=self.dtype, inexact=False)
+            (self.embedding.value,), dtype=self.dtype, inexact=False
+        )
         if self.num_embeddings == 1:
             return jnp.broadcast_to(embedding, inputs.shape + (self.features,))
         return jnp.take(embedding, inputs, axis=0)
@@ -89,22 +90,24 @@ class Embed(nnx.Module):
           in NLP models.
         """
         query, embedding = self.promote_dtype(
-            (query, self.embedding.value), dtype=self.dtype)
+            (query, self.embedding.value), dtype=self.dtype
+        )
         return jnp.dot(query, embedding.T)
 
 
 class VocabParallelEmbedding(nn.Module):
     """Vocabulary parallel embedding layer."""
+
     vocab_size: int
     hidden_size: int
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.embedding = self.param(
-            'embedding',
+            "embedding",
             nn.initializers.normal(stddev=0.02),
             (self.vocab_size, self.hidden_size),
-            self.dtype
+            self.dtype,
         )
 
     def __call__(self, input_ids: jnp.ndarray) -> jnp.ndarray:
@@ -114,6 +117,7 @@ class VocabParallelEmbedding(nn.Module):
 
 class ParallelLMHead(nn.Module):
     """Parallel language modeling head."""
+
     vocab_size: int
     hidden_size: int
     dtype: jnp.dtype = jnp.float32
@@ -122,10 +126,10 @@ class ParallelLMHead(nn.Module):
     def setup(self):
         # Initialize weight parameter
         self.weight = self.param(
-            'weight',
+            "weight",
             nn.initializers.normal(stddev=0.02),
             (self.vocab_size, self.hidden_size),
-            self.dtype
+            self.dtype,
         )
 
     def __call__(self, hidden_states: jnp.ndarray) -> jnp.ndarray:

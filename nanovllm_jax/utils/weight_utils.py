@@ -130,6 +130,7 @@ class WeightLoader:
                     mapping = WeightMapping(target_path=mapping)
 
                 self._process_and_assign_weight(params, hf_key, hf_weight, mapping)
+                logger.info(f"mapping for the weight: {hf_key}")
             elif "mlp.experts." in hf_key and hf_key.endswith(".weight"):
                 if self._is_excluded_layer_weight(hf_key):
                     logger.debug("Skipping excluded MoE expert weight: %s", hf_key)

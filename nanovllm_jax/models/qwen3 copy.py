@@ -1,3 +1,4 @@
+from tkinter.constants import NONE
 from typing import Optional
 import jax
 from jax import numpy as jnp
@@ -10,6 +11,17 @@ from nanovllm_jax.layers.embed_head import Embed
 logger = logging.getLogger(__name__)
 
 init_fn = nnx.initializers.uniform()
+
+
+class QWen3DecoderLayer(nnx.Module):
+    def __init__(
+        self,
+        config: PretrainedConfig,
+        layer_id: int = 0,
+        dtype: jnp.dtype = jnp.bfloat16,
+        rngs: nnx.Rngs | None = None,
+    ):
+        pass
 
 
 class Qwen3Model(nnx.Module):
@@ -32,9 +44,27 @@ class Qwen3Model(nnx.Module):
             param_dtype=dtype,
         )
 
+        self.layers = nnx.data(
+            [
+                QWen3DecoderLayer(
+                    config=config,
+                    layer_id=i,
+                    dtype=dtype,
+                    rngs=rngs,
+                )
+                for i in range(config.num_hidden_layers)
+            ]
+        )
+
     def __call__(self, input_ids: jax.Array) -> jax.Array:
         hidden_states = self.embed_tokens(input_ids)
         return hidden_states
+
+
+class LogitsProcessor(nnx.Module):
+    def __init__(self, vocab_size, mesh):
+        self.vocab_size = vocab_size
+        self.mesh = mesh
 
 
 class ParallelLMHead(nnx.Module):
@@ -76,6 +106,7 @@ class Qwen3ForCausalLM(nnx.Module):
         self.lm_head = ParallelLMHead(
             config.vocab_size, config.hidden_size, dtype=self.dtype, rngs=rngs
         )
+        self.logits_processor = LogitsProcessor(config.vocab_size, self.mesh)
 
     def __call__(self, input_ids: jax.Array) -> jax.Array:
         hidden_states = self.transformers(input_ids)
