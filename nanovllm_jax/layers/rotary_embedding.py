@@ -1,4 +1,3 @@
-import jax
 import jax.numpy as jnp
 from functools import lru_cache
 from flax import nnx
@@ -12,7 +11,7 @@ def apply_rotary_emb(
     """Apply rotary embedding to input tensor."""
     cos = jnp.expand_dims(cos, -2)
     sin = jnp.expand_dims(sin, -2)
-    x1, x2 = jnp.split(x.astype(jnp.float32), 2, axis=-1)
+    x1, x2 = jnp.split(x.astype(jnp.bfloat16), 2, axis=-1)
     y1 = x1 * cos - x2 * sin
     y2 = x2 * cos + x1 * sin
     return jnp.concatenate((y1, y2), axis=-1).astype(x.dtype)
@@ -27,7 +26,7 @@ class RotaryEmbedding(nnx.Module):
         rotary_dim: int,
         max_position_embeddings: int,
         base: float,
-        dtype: jnp.dtype = jnp.float32,
+        dtype: jnp.dtype = jnp.bfloat16,
     ):
         self.head_size = head_size
         self.rotary_dim = rotary_dim
@@ -40,9 +39,9 @@ class RotaryEmbedding(nnx.Module):
         # Build cos/sin cache
         inv_freq = 1.0 / (
             self.base
-            ** (jnp.arange(0, self.rotary_dim, 2, dtype=jnp.float32) / self.rotary_dim)
+            ** (jnp.arange(0, self.rotary_dim, 2, dtype=jnp.bfloat16) / self.rotary_dim)
         )
-        t = jnp.arange(self.max_position_embeddings, dtype=jnp.float32)
+        t = jnp.arange(self.max_position_embeddings, dtype=jnp.bfloat16)
         freqs = jnp.einsum("i,j -> ij", t, inv_freq)
         cos = jnp.cos(freqs)
         sin = jnp.sin(freqs)
@@ -77,9 +76,10 @@ def get_rope(
     rotary_dim: int,
     max_position: int,
     base: float,
+    dtype: jnp.dtype = jnp.bfloat16,
     rope_scaling: dict | None = None,
 ):
     """Get cached rotary embedding instance."""
     assert rope_scaling is None
-    rotary_emb = RotaryEmbedding(head_size, rotary_dim, max_position, base)
+    rotary_emb = RotaryEmbedding(head_size, rotary_dim, max_position, base, dtype)
     return rotary_emb
