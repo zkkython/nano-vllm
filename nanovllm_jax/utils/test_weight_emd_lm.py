@@ -14,10 +14,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 import logging
 
 # Set up basic logging configuration to show INFO level
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(levelname)s - %(name)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(name)s - %(message)s")
 
 # Only suppress JAX-related loggers to hide XLA warnings
 logging.getLogger("jax").setLevel(logging.ERROR)
@@ -51,6 +48,7 @@ class TestQwen3NNXForward(unittest.TestCase):
 
     def setUp(self):
         devices = jax.devices()
+        # 设备分配是按照网格切分，切分轴是tensor
         self.mesh = Mesh(devices[: min(4, len(devices))], ("tensor",))
 
         from transformers import AutoConfig
@@ -72,15 +70,85 @@ class TestQwen3NNXForward(unittest.TestCase):
         )
 
     def _build_weight_mappings(self):
-        """Build minimal weight mappings for embedding and lm_head."""
-        weight_mappings = {
+        """Build full weight mappings for Qwen3-0.6B.
+
+        Embedding / LM head use vocab-parallel sharding along the tensor axis:
+        - PartitionSpec('tensor', None) on weight of shape [vocab, hidden]
+
+        Decoder layers use column/row-parallel sharding:
+        - Q/K/V/Gate/Up:  sharding=(None, 'tensor')
+        - O/Down:         sharding=('tensor', None)
+        """
+        weight_mappings: dict[str, WeightMapping] = {
+            # Vocab-parallel embedding and LM head
             "model.embed_tokens.weight": WeightMapping(
-                target_path="transformers.embed_tokens.embedding"
+                target_path="transformers.embed_tokens.embedding",
+                sharding=("tensor", None),
             ),
             "lm_head.weight": WeightMapping(
                 target_path="lm_head.weight",
+                sharding=("tensor", None),
             ),
         }
+
+        # Decoder layer mappings
+        num_layers = self.hf_config.num_hidden_layers
+        for layer_id in range(num_layers):
+            hf_prefix = f"model.layers.{layer_id}"
+            nnx_prefix = f"transformers.layers.{layer_id}"
+
+            # LayerNorms (replicated)
+            weight_mappings[f"{hf_prefix}.input_layernorm.weight"] = WeightMapping(
+                target_path=f"{nnx_prefix}.input_layernorm.weight",
+            )
+            weight_mappings[f"{hf_prefix}.post_attention_layernorm.weight"] = (
+                WeightMapping(
+                    target_path=f"{nnx_prefix}.post_attention_layernorm.weight",
+                )
+            )
+
+            # Self-attention projections
+            for proj in ["q_proj", "k_proj", "v_proj"]:
+                hf_key = f"{hf_prefix}.self_attn.{proj}.weight"
+                target = f"{nnx_prefix}.self_attn.{proj}.weight"
+                weight_mappings[hf_key] = WeightMapping(
+                    target_path=target,
+                    sharding=(None, "tensor"),
+                )
+
+            weight_mappings[f"{hf_prefix}.self_attn.q_norm.weight"] = WeightMapping(
+                target_path=f"{nnx_prefix}.self_attn.q_norm.weight",
+            )
+
+            weight_mappings[f"{hf_prefix}.self_attn.k_norm.weight"] = WeightMapping(
+                target_path=f"{nnx_prefix}.self_attn.k_norm.weight",
+            )
+
+            # Output projection (row-parallel)
+            weight_mappings[f"{hf_prefix}.self_attn.o_proj.weight"] = WeightMapping(
+                target_path=f"{nnx_prefix}.self_attn.o_proj.weight",
+                sharding=("tensor", None),
+            )
+
+            # MLP projections
+            for proj in ["gate_proj", "up_proj"]:
+                hf_key = f"{hf_prefix}.mlp.{proj}.weight"
+                target = f"{nnx_prefix}.mlp.{proj}.weight"
+                weight_mappings[hf_key] = WeightMapping(
+                    target_path=target,
+                    sharding=(None, "tensor"),
+                )
+
+            weight_mappings[f"{hf_prefix}.mlp.down_proj.weight"] = WeightMapping(
+                target_path=f"{nnx_prefix}.mlp.down_proj.weight",
+                sharding=("tensor", None),
+            )
+
+        # Final layer norm
+        weight_mappings["model.norm.weight"] = WeightMapping(
+            target_path="transformers.final_layernorm.weight",
+        )
+
         return weight_mappings
 
     def test_qwen3_forward_with_loaded_weights(self):
