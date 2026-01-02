@@ -46,8 +46,10 @@ class LLMEngine:
         self.scheduler.add(seq)
 
     def step(self):
+        # 拿到完整的sqes，先跑prefill, 然后跑decode
         seqs, is_prefill = self.scheduler.schedule()
         token_ids = self.model_runner.call("run", seqs, is_prefill)
+        # 没跑完一次decode 就会给各个seq append一个token 直至结束,结束需要释放占用的kv block
         self.scheduler.postprocess(seqs, token_ids)
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
         num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -len(seqs)

@@ -3,6 +3,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -61,11 +62,12 @@ class WeightMapping:
 
 
 class WeightLoader:
+
     def __init__(
         self,
         model: nnx.Module,
         model_config: ModelConfig,
-        mesh: Mesh,
+        mesh: Optional[jax.sharding.Mesh],
         dtype: jnp.dtype = jnp.bfloat16,
     ):
         self.model = model

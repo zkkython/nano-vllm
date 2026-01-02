@@ -15,7 +15,7 @@ model = AutoModelForCausalLM.from_pretrained(
 model = model.to("cpu")
 model.eval()
 
-prompt = "中国的首都"
+prompt = "1+1=？"
 print(f"\nPrompt: {prompt}")
 
 input_ids = tokenizer.encode(prompt, return_tensors="pt")

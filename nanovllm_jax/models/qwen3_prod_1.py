@@ -4,8 +4,8 @@ from jax import numpy as jnp
 from flax import nnx
 from transformers import PretrainedConfig
 import logging
-
 from nanovllm_jax.layers.embed_head import Embed
+from nanovllm_jax.layers.rotary_embedding import RotaryEmbedding, get_rope
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,13 @@ class SelfAttention(nnx.Module):
             eps=config.rms_norm_eps,
             dtype=dtype,
         )
+        self.rotary_emb = get_rope(
+            self.head_dim,
+            rotary_dim=self.head_dim,
+            max_position=self.max_position,
+            base=self.rope_theta,
+            dtype=dtype,
+        )
 
     def __call__(
         self, hidden_states: jax.Array, use_cache: bool = False, is_decode: bool = False
@@ -185,12 +192,18 @@ class SelfAttention(nnx.Module):
         # 归一化
         q = self.q_norm(q)
         k = self.k_norm(k)
+        # For RoPE comparison: reshape to [batch*seq, features]
+        q_copy = q.copy().reshape(batch_size * seq_len, self.num_heads * self.head_dim)
+        k_copy = k.copy().reshape(
+            batch_size * seq_len, self.num_kv_heads * self.head_dim
+        )
+
         # Apply RoPE to Q and K
         if is_decode and use_cache and self.k_cache.value is not None:
             # Decode: use past_len as position offset
             past_len = self.k_cache.value.shape[1]
             cos, sin = _build_rope_cos_sin(
-                past_len + seq_len, self.head_dim, self.rope_theta, dtype=jnp.float32
+                past_len + seq_len, self.head_dim, self.rope_theta, dtype=self.dtype
             )
             # Only take the positions for current tokens
             cos = cos[past_len : past_len + seq_len, :]
@@ -198,11 +211,98 @@ class SelfAttention(nnx.Module):
         else:
             # Prefill: positions 0..seq_len-1
             cos, sin = _build_rope_cos_sin(
-                seq_len, self.head_dim, self.rope_theta, dtype=jnp.float32
+                seq_len, self.head_dim, self.rope_theta, dtype=self.dtype
             )
 
         q = _apply_rope(q, cos, sin)
         k = _apply_rope(k, cos, sin)
+        # Create positions array [0, 1, 2, ..., seq_len-1] repeated for each batch
+        positions = jnp.tile(jnp.arange(seq_len), batch_size)
+        print(f"positions: {positions}")
+
+        # Apply RoPE directly (NNX modules are callable immediately)
+        q_rope_old, k_rope_old = self.rotary_emb(positions, q_copy, k_copy)
+        print(f"After RoPE - q: {q_rope_old.shape}, k: {k_rope_old.shape}")
+
+        # Reshape old results back to [batch, seq, heads, head_dim] for comparison
+        q_rope_reshaped = q_rope_old.reshape(
+            batch_size, seq_len, self.num_heads, self.head_dim
+        )
+        k_rope_reshaped = k_rope_old.reshape(
+            batch_size, seq_len, self.num_kv_heads, self.head_dim
+        )
+
+        q_match = jnp.allclose(q, q_rope_reshaped, rtol=1e-5, atol=1e-5)
+        k_match = jnp.allclose(k, k_rope_reshaped, rtol=1e-5, atol=1e-5)
+
+        print(
+            f"Q tensors match: {q_match}，q shape {q.shape}, q_rope_reshaped shape {q_rope_reshaped.shape}"
+        )
+        if not q_match:
+            print(
+                f"q 10 values: {(q.flatten())[:10]}, q_rope_reshaped 10 values: {(q_rope_reshaped.flatten())[:10]}"
+            )
+            # Detailed mismatch analysis for Q
+            q_diff = jnp.abs(q - q_rope_reshaped)
+            max_diff = float(jnp.max(q_diff))
+            mean_diff = float(jnp.mean(q_diff))
+            mismatch_mask = ~jnp.isclose(q, q_rope_reshaped, rtol=1e-5, atol=1e-5)
+            num_mismatches = int(jnp.sum(mismatch_mask))
+
+            print(f"  Max difference: {max_diff:.6e}")
+            print(f"  Mean difference: {mean_diff:.6e}")
+            print(
+                f"  Mismatches: {num_mismatches} / {q.size} ({100.0 * num_mismatches / q.size:.2f}%)"
+            )
+
+            # Show top 5 largest differences
+            flat_diff = q_diff.reshape(-1)
+            top_k = min(5, num_mismatches)
+            if top_k > 0:
+                top_indices = jnp.argsort(flat_diff)[-top_k:]
+                print(f"  Top {top_k} largest differences:")
+                for idx in reversed(top_indices):
+                    idx = int(idx)
+                    multi_idx = jnp.unravel_index(idx, q.shape)
+                    q_val = float(q.reshape(-1)[idx])
+                    q_rope_val = float(q_rope_reshaped.reshape(-1)[idx])
+                    diff = float(flat_diff[idx])
+                    print(
+                        f"    [{multi_idx}] q={q_val:.6f} vs q_rope={q_rope_val:.6f}, diff={diff:.6e}"
+                    )
+
+        print(
+            f"K tensors match: {k_match}, k shape {k.shape}, k_rope_reshaped shape {k_rope_reshaped.shape}"
+        )
+        if not k_match:
+            # Detailed mismatch analysis for K
+            k_diff = jnp.abs(k - k_rope_reshaped)
+            max_diff = float(jnp.max(k_diff))
+            mean_diff = float(jnp.mean(k_diff))
+            mismatch_mask = ~jnp.isclose(k, k_rope_reshaped, rtol=1e-5, atol=1e-5)
+            num_mismatches = int(jnp.sum(mismatch_mask))
+
+            print(f"  Max difference: {max_diff:.6e}")
+            print(f"  Mean difference: {mean_diff:.6e}")
+            print(
+                f"  Mismatches: {num_mismatches} / {k.size} ({100.0 * num_mismatches / k.size:.2f}%)"
+            )
+
+            # Show top 5 largest differences
+            flat_diff = k_diff.reshape(-1)
+            top_k = min(5, num_mismatches)
+            if top_k > 0:
+                top_indices = jnp.argsort(flat_diff)[-top_k:]
+                print(f"  Top {top_k} largest differences:")
+                for idx in reversed(top_indices):
+                    idx = int(idx)
+                    multi_idx = jnp.unravel_index(idx, k.shape)
+                    k_val = float(k.reshape(-1)[idx])
+                    k_rope_val = float(k_rope_reshaped.reshape(-1)[idx])
+                    diff = float(flat_diff[idx])
+                    print(
+                        f"    [{multi_idx}] k={k_val:.6f} vs k_rope={k_rope_val:.6f}, diff={diff:.6e}"
+                    )
 
         # KV cache management (store BEFORE head expansion)
         if use_cache:
