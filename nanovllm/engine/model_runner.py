@@ -3,6 +3,7 @@ import torch
 import torch.distributed as dist
 from multiprocessing.synchronize import Event
 from multiprocessing.shared_memory import SharedMemory
+from nanovllm.utils.distributed import barrier, is_distributed, broadcast_object
 
 from nanovllm.config import Config
 from nanovllm.engine.sequence import Sequence
@@ -25,8 +26,13 @@ class ModelRunner:
         self.rank = rank
         self.event = event
 
+        # 初始化分布式通信组
+        init_method = f"tcp://{self.config.master_addr}:{self.config.master_port}"
         dist.init_process_group(
-            "nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank
+            backend="nccl", 
+            init_method=init_method,
+            world_size=self.world_size, 
+            rank=rank
         )
         torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
@@ -44,54 +50,47 @@ class ModelRunner:
         torch.set_default_dtype(default_dtype)
 
         if self.world_size > 1:
-            if rank == 0:
-                self.shm = SharedMemory(name="nanovllm", create=True, size=2**20)
-                dist.barrier()
-            else:
-                dist.barrier()
-                self.shm = SharedMemory(name="nanovllm")
+            # 对于跨机器TP，我们使用分布式通信替代共享内存
+            dist.barrier()
+            if rank != 0:
+                # 非主rank进入循环处理来自主rank的请求
                 self.loop()
 
     def exit(self):
         if self.world_size > 1:
-            self.shm.close()
             dist.barrier()
-            if self.rank == 0:
-                self.shm.unlink()
         if not self.enforce_eager:
             del self.graphs, self.graph_pool
         torch.cuda.synchronize()
         dist.destroy_process_group()
 
     def loop(self):
+        # 在跨机器环境中，非主rank等待主rank的指令
+        # 这里使用分布式通信来协调工作
         while True:
-            method_name, args = self.read_shm()
-            self.call(method_name, *args)
+            # 从主rank接收指令
+            call_data = broadcast_object(None, src=0)  # 从rank 0接收
+            if call_data is None:
+                continue
+            method_name, args = call_data
             if method_name == "exit":
                 break
-
-    def read_shm(self):
-        assert self.world_size > 1 and self.rank
-        self.event.wait()
-        n = int.from_bytes(self.shm.buf[0:4], "little")
-        method_name, *args = pickle.loads(self.shm.buf[4 : n + 4])
-        self.event.clear()
-        return method_name, args
-
-    def write_shm(self, method_name, *args):
-        assert self.world_size > 1 and not self.rank
-        data = pickle.dumps([method_name, *args])
-        n = len(data)
-        self.shm.buf[0:4] = n.to_bytes(4, "little")
-        self.shm.buf[4 : n + 4] = data
-        for event in self.event:
-            event.set()
+            # 执行方法
+            self.call(method_name, *args)
 
     def call(self, method_name, *args):
-        if self.world_size > 1 and self.rank == 0:
-            self.write_shm(method_name, *args)
+        # 使用分布式通信替代共享内存
+        if self.world_size > 1:
+            # 将方法调用参数广播给所有rank
+            call_data = (method_name, args)
+            call_data = broadcast_object(call_data, src=0)  # 从rank 0广播
+            method_name, args = call_data
+            
         method = getattr(self, method_name, None)
-        return method(*args)
+        if method:
+            return method(*args)
+        else:
+            raise AttributeError(f"Method {method_name} not found")
 
     def warmup_model(self):
         torch.cuda.empty_cache()
@@ -286,12 +285,20 @@ class ModelRunner:
             self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         )
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
+        
+        # 在分布式环境中，将temperatures广播给所有rank
+        temperatures = broadcast_object(temperatures, src=0)
+        
         logits = self.run_model(input_ids, positions, is_prefill)
         token_ids = (
             self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
         )
+        
+        # 将结果广播给所有rank，但只在rank 0上返回
+        token_ids = broadcast_object(token_ids, src=0)
+        
         reset_context()
-        return token_ids
+        return token_ids if self.rank == 0 else None
 
     @torch.inference_mode()
     def capture_cudagraph(self):

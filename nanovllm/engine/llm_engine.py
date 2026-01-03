@@ -4,6 +4,7 @@ from time import perf_counter
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 import torch.multiprocessing as mp
+import os
 
 from nanovllm.config import Config
 from nanovllm.sampling_params import SamplingParams
@@ -14,20 +15,40 @@ from nanovllm.engine.model_runner import ModelRunner
 
 class LLMEngine:
 
-    def __init__(self, model, **kwargs):
+    def __init__(self, model, master_addr="localhost", master_port=2333, node_rank=0, **kwargs):
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
+        # 添加分布式相关的配置参数
+        if 'master_addr' not in config_kwargs:
+            config_kwargs['master_addr'] = master_addr
+        if 'master_port' not in config_kwargs:
+            config_kwargs['master_port'] = master_port
+        if 'node_rank' not in config_kwargs:
+            config_kwargs['node_rank'] = node_rank
         config = Config(model, **config_kwargs)
-        self.ps = []
-        self.events = []
-        ctx = mp.get_context("spawn")
-        for i in range(1, config.tensor_parallel_size):
-            event = ctx.Event()
-            process = ctx.Process(target=ModelRunner, args=(config, i, event))
-            process.start()
-            self.ps.append(process)
-            self.events.append(event)
-        self.model_runner = ModelRunner(config, 0, self.events)
+        
+        # 检查是否是分布式运行
+        if config.tensor_parallel_size > 1:
+            # 设置环境变量，以便子进程可以访问
+            os.environ['MASTER_ADDR'] = config.master_addr
+            os.environ['MASTER_PORT'] = str(config.master_port)
+            os.environ['WORLD_SIZE'] = str(config.tensor_parallel_size)
+            
+            self.ps = []
+            self.events = []
+            ctx = mp.get_context("spawn")
+            for i in range(1, config.tensor_parallel_size):
+                event = ctx.Event()
+                process = ctx.Process(target=ModelRunner, args=(config, i, event))
+                process.start()
+                self.ps.append(process)
+                self.events.append(event)
+            self.model_runner = ModelRunner(config, 0, self.events)
+        else:
+            self.ps = []
+            self.events = []
+            self.model_runner = ModelRunner(config, 0, self.events)
+            
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
         self.scheduler = Scheduler(config)
