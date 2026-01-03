@@ -16,6 +16,10 @@ class Config:
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1 
+    master_addr: str = "localhost"
+    master_port: int = 2333
+    local_rank: int = 0
+    node_rank: int = 0
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
