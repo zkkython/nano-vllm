@@ -34,8 +34,19 @@ class LLMEngine:
             # 如果已经初始化了分布式环境，使用现有的配置
             config.tensor_parallel_size = dist.get_world_size()
             rank = dist.get_rank()
-            # 从环境变量中获取local_rank
+            # 从环境变量中获取local_rank（由torchrun设置）
             local_rank = int(os.environ.get("LOCAL_RANK", rank))
+            # 从环境变量中获取master_addr（由torchrun设置）
+            # 重要：必须指向Master节点，所有worker节点都用同一个MASTER_ADDR
+            master_addr_env = os.environ.get("MASTER_ADDR")
+            if master_addr_env:
+                config.master_addr = master_addr_env
+
+            print(
+                f"[DEBUG] Distributed config: rank={rank}, local_rank={local_rank}, "
+                f"world_size={config.tensor_parallel_size}, master_addr={config.master_addr}",
+                flush=True,
+            )
 
             # 只在rank 0上启动其他rank的进程（单机多卡情况）
             # 或者在分布式环境中每个rank都运行自己的ModelRunner
