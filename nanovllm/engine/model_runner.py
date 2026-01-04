@@ -1,6 +1,5 @@
 import torch
 import torch.distributed as dist
-from multiprocessing.synchronize import Event
 from nanovllm.utils.distributed import broadcast_object
 
 from nanovllm.config import Config
@@ -14,14 +13,13 @@ from nanovllm.models.models_mapping import MODELS_MAPPING
 
 class ModelRunner:
 
-    def __init__(self, config: Config, rank: int, event: Event | list[Event]):
+    def __init__(self, config: Config, rank: int):
         self.config = config
         hf_config = config.hf_config
         self.block_size = config.kvcache_block_size
         self.enforce_eager = config.enforce_eager
         self.world_size = config.tensor_parallel_size
         self.rank = rank
-        self.event = event
 
         # 初始化分布式通信组
         if dist.is_initialized():
@@ -45,7 +43,7 @@ class ModelRunner:
                     rank=rank,
                     device_id=rank,
                 )
-                dist.barrier()
+
         torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)

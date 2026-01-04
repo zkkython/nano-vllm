@@ -47,19 +47,17 @@ class LLMEngine:
                 os.environ["WORLD_SIZE"] = str(config.tensor_parallel_size)
 
                 self.ps = []
-                self.events = []
+
                 ctx = mp.get_context("spawn")
                 for i in range(1, config.tensor_parallel_size):
-                    event = ctx.Event()
-                    process = ctx.Process(target=ModelRunner, args=(config, i, event))
+
+                    process = ctx.Process(target=ModelRunner, args=(config, i))
                     process.start()
                     self.ps.append(process)
-                    self.events.append(event)
-                self.model_runner = ModelRunner(config, 0, self.events)
+
+                self.model_runner = ModelRunner(config, 0)
             else:
-                self.ps = []
-                self.events = []
-                self.model_runner = ModelRunner(config, 0, self.events)
+                self.model_runner = ModelRunner(config, 0)
 
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
@@ -91,26 +89,6 @@ class LLMEngine:
                 self.model_runner.call("exit")
         except Exception as e:
             print(f"[DEBUG] Exception in exit try block: {e}", flush=True)
-            pass
-        finally:
-            # 清理Event对象资源
-            try:
-                print("[DEBUG] Cleaning up events", flush=True)
-                if hasattr(self, "events") and self.events:
-                    print(f"[DEBUG] Found {len(self.events)} events", flush=True)
-                    for event in self.events:
-                        # 关闭event以释放底层信号量资源
-                        try:
-                            if hasattr(event, "close"):
-                                event.close()
-                        except Exception as e:
-                            print(f"[DEBUG] Error closing event: {e}", flush=True)
-                    self.events.clear()
-                    print("[DEBUG] Events cleared", flush=True)
-            except Exception as e:
-                print(f"[DEBUG] Error cleaning events: {e}", flush=True)
-                pass
-
         print("[DEBUG] LLMEngine.exit() completed", flush=True)
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
