@@ -114,7 +114,54 @@ MASTER_ADDR=115.190.188.193  # Master 节点（Node1）的 IP
 3. 确认网络防火墙允许节点间通信
 4. 检查 `torch.distributed` 是否正确初始化
 
+## socket 超时问题排查
+
+如果出现以下错误：
+```
+[W104 21:05:01.030155932 socket.cpp:209] [c10d] The hostname of the client socket cannot be retrieved. err=-3
+[W104 21:07:12.188054319 socket.cpp:941] [c10d] The server socket on [...]:1815 has timed out
+```
+
+### 常见原因
+
+1. **网络接口配置不正确**
+   - NCCL 默认使用 eth0，但某些环境可能是 en0、ens33 等
+   - 解决：设置 `NCCL_SOCKET_IFNAME` 环境变量
+
+2. **网络不通**
+   - Node1 和 Node2 之间无法通信
+   - 解决：检查防火墙、网络连接
+
+3. **Master 节点还未启动**
+   - Worker 节点先启动，Master 还未初始化
+   - 解决：先在 Node1 启动 torchrun，然后启动 Node2
+
+### 环境变量设置
+
+在启动脚本中设置以下环境变量：
+
+```python
+# 设置 NCCL 环境变量以改善跨节点通信
+os.environ.setdefault("NCCL_SOCKET_IFNAME", "eth0")  # 检查你的网络接口
+os.environ.setdefault("NCCL_DEBUG", "INFO")  # 打开调试信息
+os.environ.setdefault("NCCL_BLOCKING_WAIT", "1")  # 使用阻塞等待
+```
+
+### 诊断工具
+
+运行诊断脚本检查配置：
+```bash
+torchrun \
+    --nnodes=1 \
+    --nproc_per_node=1 \
+    --master_addr=<your_master_ip> \
+    --master_port=2333 \
+    debug_distributed.py
+```
+
 ## 代码实现原理
+
+### 1. 环境变量读取
 
 启动脚本从环境变量读取配置：
 
@@ -126,15 +173,40 @@ master_addr = os.environ.get("MASTER_ADDR", "115.190.188.193")
 master_port = int(os.environ.get("MASTER_PORT", 2333))
 ```
 
-ModelRunner 中使用 local_rank：
+### 2. 只在 Rank 0 初始化 LLM
+
+```python
+if rank == 0:
+    print("[Node1] Rank 0 initializing LLM...")
+    llm = LLM(
+        model="/data/Qwen3-8B/Qwen3-8B",
+        tensor_parallel_size=world_size,
+        master_addr=master_addr,
+        master_port=master_port,
+    )
+    # 等待 Worker 初始化
+    time.sleep(3)
+    # 执行推理...
+else:
+    # 其他 rank 等待指令（在 ModelRunner.loop() 中）
+    print(f"Rank {rank} waiting for tasks...")
+```
+
+### 3. ModelRunner 中使用 local_rank
 
 ```python
 torch.cuda.set_device(local_rank)  # 使用本机GPU索引
-dist.init_process_group(
-    backend="nccl",
-    init_method=f"tcp://{master_addr}:{master_port}",
-    world_size=world_size,
-    rank=rank,
-    device_id=local_rank,  # 关键：使用local_rank而不是rank
-)
+if not dist.is_initialized():
+    dist.init_process_group(
+        backend="nccl",
+        init_method=f"tcp://{master_addr}:{master_port}",
+        world_size=world_size,
+        rank=rank,
+        device_id=local_rank,  # 关键：使用local_rank而不是rank
+    )
 ```
+
+### 4. 分布式通信流程
+
+- **Rank 0**：初始化 LLM → 等待 Worker 初始化 → 发送广播信号和数据
+- **其他 Rank**：在 loop() 中等待 → 接收广播信号 → 执行相应方法

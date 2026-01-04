@@ -27,16 +27,22 @@ class ModelRunner:
 
         # 初始化分布式通信组
         if dist.is_initialized():
-            # 如果已经初始化，则使用现有的分布式环境
-            assert dist.get_world_size() == self.world_size
-            assert dist.get_rank() == rank
+            # 如果已经初始化（通过torchrun），则使用现有的分布式环境
+            print(
+                f"[DEBUG] Rank {rank} (local_rank={local_rank}) Distributed environment already initialized by torchrun",
+                flush=True,
+            )
+            assert dist.get_world_size() == self.world_size, \
+                f"World size mismatch: expected {self.world_size}, got {dist.get_world_size()}"
+            assert dist.get_rank() == rank, \
+                f"Rank mismatch: expected {rank}, got {dist.get_rank()}"
         else:
             if self.world_size > 1:
                 print(
                     f"[DEBUG] Rank {rank} (local_rank={local_rank}) Initializing new distributed environment",
                     flush=True,
                 )
-                # 否则初始化新的分布式环境
+                # 否则初始化新的分布式环境（单机多卡情况）
                 init_method = (
                     f"tcp://{self.config.master_addr}:{self.config.master_port}"
                 )
@@ -46,6 +52,10 @@ class ModelRunner:
                     world_size=self.world_size,
                     rank=rank,
                     device_id=local_rank,
+                )
+                print(
+                    f"[DEBUG] Rank {rank} (local_rank={local_rank}) Distributed environment initialized",
+                    flush=True,
                 )
 
         torch.cuda.set_device(local_rank)
