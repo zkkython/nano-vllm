@@ -31,8 +31,7 @@ echo ""
 # 你可以为整个脚本修改这里的值
 
 # eth0 是最常见的，但也可能是 ens0, ens3, ens33, en0 等
-export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-eth0}"
-
+export NCCL_SOCKET_IFNAME="eth1"
 # 禁用 InfiniBand，仅使用 TCP
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
 
