@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 
+
 def explain_argmax():
     """
     Argmax 函数用于找到数组或张量中最大元素的索引。
@@ -24,8 +25,10 @@ def explain_argmax():
     - 机器学习中，找到最佳超参数配置的索引
     """
 
+
 print("Argmax 函数解释:")
 explain_argmax()
+
 
 def test_argmax():
     """测试 argmax 函数的各种情况"""
@@ -70,6 +73,7 @@ def test_argmax():
     predicted_labels = torch.argmax(logits, dim=1)
     print(f"模型预测 logits:\n{logits}")
     print(f"预测的 labels (argmax 结果): {predicted_labels}")
+
 
 if __name__ == "__main__":
     test_argmax()
