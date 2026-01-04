@@ -33,11 +33,13 @@ class LLMEngine:
             print("[DEBUG] Distributed environment detected", flush=True)
             # 如果已经初始化了分布式环境，使用现有的配置
             config.tensor_parallel_size = dist.get_world_size()
-            local_rank = dist.get_rank()
+            rank = dist.get_rank()
+            # 从环境变量中获取local_rank
+            local_rank = int(os.environ.get("LOCAL_RANK", rank))
 
             # 只在rank 0上启动其他rank的进程（单机多卡情况）
             # 或者在分布式环境中每个rank都运行自己的ModelRunner
-            self.model_runner = ModelRunner(config, local_rank, None)
+            self.model_runner = ModelRunner(config, rank, local_rank)
         else:
             # 否则使用原来的多进程方式（主要用于单机多卡）
             if config.tensor_parallel_size > 1:
@@ -50,14 +52,14 @@ class LLMEngine:
 
                 ctx = mp.get_context("spawn")
                 for i in range(1, config.tensor_parallel_size):
-
-                    process = ctx.Process(target=ModelRunner, args=(config, i))
+                    # 单机多卡时，local_rank等于rank
+                    process = ctx.Process(target=ModelRunner, args=(config, i, i))
                     process.start()
                     self.ps.append(process)
 
-                self.model_runner = ModelRunner(config, 0)
+                self.model_runner = ModelRunner(config, 0, 0)
             else:
-                self.model_runner = ModelRunner(config, 0)
+                self.model_runner = ModelRunner(config, 0, 0)
 
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id

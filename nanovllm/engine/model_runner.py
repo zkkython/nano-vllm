@@ -13,13 +13,17 @@ from nanovllm.models.models_mapping import MODELS_MAPPING
 
 class ModelRunner:
 
-    def __init__(self, config: Config, rank: int):
+    def __init__(self, config: Config, rank: int, local_rank: int = None):
         self.config = config
         hf_config = config.hf_config
         self.block_size = config.kvcache_block_size
         self.enforce_eager = config.enforce_eager
         self.world_size = config.tensor_parallel_size
         self.rank = rank
+        # 如果没有指定local_rank，则假设local_rank等于rank（单机情况）
+        if local_rank is None:
+            local_rank = rank
+        self.local_rank = local_rank
 
         # 初始化分布式通信组
         if dist.is_initialized():
@@ -29,7 +33,7 @@ class ModelRunner:
         else:
             if self.world_size > 1:
                 print(
-                    f"[DEBUG] Rank {rank} Initializing new distributed environment",
+                    f"[DEBUG] Rank {rank} (local_rank={local_rank}) Initializing new distributed environment",
                     flush=True,
                 )
                 # 否则初始化新的分布式环境
@@ -41,10 +45,10 @@ class ModelRunner:
                     init_method=init_method,
                     world_size=self.world_size,
                     rank=rank,
-                    device_id=rank,
+                    device_id=local_rank,
                 )
 
-        torch.cuda.set_device(rank)
+        torch.cuda.set_device(local_rank)
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
@@ -97,7 +101,7 @@ class ModelRunner:
         # 这里使用分布式通信来协调工作
         while True:
             # 从主rank接收指令 - 使用一个信号来标记是否有真实数据
-            signal = torch.zeros(1, dtype=torch.long, device=f"cuda:{self.rank}")
+            signal = torch.zeros(1, dtype=torch.long, device=f"cuda:{self.local_rank}")
             dist.broadcast(signal, src=0)
 
             if signal.item() == 0:
@@ -127,7 +131,7 @@ class ModelRunner:
                 )
 
             # 发送信号：1表示有指令
-            signal = torch.ones(1, dtype=torch.long, device=f"cuda:{self.rank}")
+            signal = torch.ones(1, dtype=torch.long, device=f"cuda:{self.local_rank}")
             dist.broadcast(signal, src=0)
 
             # 广播指令
