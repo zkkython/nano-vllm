@@ -29,6 +29,28 @@ def main():
     print("简单分布式通信测试")
     print("=" * 80 + "\n")
     
+    # 设置 NCCL 环境变量
+    # 这些设置可以在命令行前设置，或者在这里设置
+    if "NCCL_SOCKET_IFNAME" not in os.environ:
+        # 尝试自动检测，默认 eth0
+        os.environ["NCCL_SOCKET_IFNAME"] = "eth0"
+    
+    if "NCCL_IB_DISABLE" not in os.environ:
+        os.environ["NCCL_IB_DISABLE"] = "1"  # 禁用 InfiniBand
+    
+    if "NCCL_DEBUG" not in os.environ:
+        os.environ["NCCL_DEBUG"] = "WARN"  # 显示警告及以上
+    
+    if "PYTHONUNBUFFERED" not in os.environ:
+        os.environ["PYTHONUNBUFFERED"] = "1"  # 无缓冲输出
+    
+    # 打印环境变量
+    print(f"[INFO] NCCL 环境变量:")
+    print(f"  NCCL_SOCKET_IFNAME:  {os.environ.get('NCCL_SOCKET_IFNAME', 'NOT SET')}")
+    print(f"  NCCL_IB_DISABLE:     {os.environ.get('NCCL_IB_DISABLE', 'NOT SET')}")
+    print(f"  NCCL_DEBUG:          {os.environ.get('NCCL_DEBUG', 'NOT SET')}")
+    print()
+    
     # 获取环境变量
     rank = int(os.environ.get("RANK", 0))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -36,10 +58,7 @@ def main():
     master_addr = os.environ.get("MASTER_ADDR", "localhost")
     master_port = int(os.environ.get("MASTER_PORT", 2333))
     
-    # 打印环境信息
     print(f"[INFO] 环境变量:")
-    print(f"  RANK:           {rank}")
-    print(f"  LOCAL_RANK:     {local_rank}")
     print(f"  WORLD_SIZE:     {world_size}")
     print(f"  MASTER_ADDR:    {master_addr}")
     print(f"  MASTER_PORT:    {master_port}")
