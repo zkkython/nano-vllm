@@ -8,6 +8,7 @@
 import os
 import torch
 import torch.distributed as dist
+import time
 from nanovllm import LLM
 from nanovllm.sampling_params import SamplingParams
 
@@ -20,14 +21,22 @@ def main():
     master_addr = os.environ.get("MASTER_ADDR", "115.190.188.193")
     master_port = int(os.environ.get("MASTER_PORT", 2333))
 
+    # 设置 NCCL 环境变量以改善跨节点通信
+    # NCCL_SOCKET_IFNAME: 指定用于通信的网络接口
+    # NCCL_DEBUG: 打开 NCCL 调试信息
+    # NCCL_BLOCKING_WAIT: 设置阻塞等待时间
+    os.environ.setdefault("NCCL_SOCKET_IFNAME", "eth0")  # 或者 en0、ens33 等
+    os.environ.setdefault("NCCL_DEBUG", "INFO")  # 打开 NCCL 调试消息
+    os.environ.setdefault("NCCL_BLOCKING_WAIT", "1")  # 使用1秒阻塞等待
+    
     print(
         f"[Node1] Starting process rank={rank}, local_rank={local_rank}, world_size={world_size}"
     )
     print(f"[Node1] Connecting to master: {master_addr}:{master_port}")
     print(f"[Node1] Current node has 8 GPUs")
-
     # 只在rank 0上初始化LLM并执行推理
     if rank == 0:
+        print(f"[Node1] Rank 0 initializing LLM...")
         # 初始化LLM
         llm = LLM(
             model="/data/Qwen3-8B/Qwen3-8B",
@@ -35,6 +44,11 @@ def main():
             master_addr=master_addr,
             master_port=master_port,
         )
+
+        # 等待所有Worker rank完成初始化
+        # 这个延迟是为了让Worker节点上的其他rank完成ModelRunner初始化
+        print(f"[Node1] Rank 0 waiting for all ranks to initialize...")
+        time.sleep(3)  # 给Worker rank足够的时间来初始化
 
         # 示例推理
         sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
@@ -48,8 +62,8 @@ def main():
         print(f"[Node1] Rank 0 finished.")
     else:
         # 其他rank等待主rank的指令
-        print(f"[Node1] Rank {rank} waiting for tasks...")
-        # 这里可以实现其他rank的逻辑，或者继续等待
+        print(f"[Node1] Rank {rank} waiting for tasks from rank 0..."
+              f"\n[DEBUG] ModelRunner.loop() will wait for broadcast signals")
 
 
 if __name__ == "__main__":
