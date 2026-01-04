@@ -32,10 +32,12 @@ class ModelRunner:
                 f"[DEBUG] Rank {rank} (local_rank={local_rank}) Distributed environment already initialized by torchrun",
                 flush=True,
             )
-            assert dist.get_world_size() == self.world_size, \
-                f"World size mismatch: expected {self.world_size}, got {dist.get_world_size()}"
-            assert dist.get_rank() == rank, \
-                f"Rank mismatch: expected {rank}, got {dist.get_rank()}"
+            assert (
+                dist.get_world_size() == self.world_size
+            ), f"World size mismatch: expected {self.world_size}, got {dist.get_world_size()}"
+            assert (
+                dist.get_rank() == rank
+            ), f"Rank mismatch: expected {rank}, got {dist.get_rank()}"
         else:
             if self.world_size > 1:
                 print(
