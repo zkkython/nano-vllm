@@ -59,15 +59,20 @@ def create_launch_script(
     node_rank: int,
     world_size: int,
     model_path: str,
-    output_file: str
+    output_file: str,
+    nproc_per_node: int = None,
 ):
     """
     创建一个启动脚本，用于在每台机器上运行
+    
+    参数说明：
+    - world_size: 总的GPU数量（所有节点的总和）
+    - nproc_per_node: 当前节点的GPU数量（如果不指定则为None）
     """
     script_content = f'''#!/usr/bin/env python3
 """
 自动生成的多机TP并行启动脚本
-节点: {node_rank}/{world_size}
+节点: {node_rank}, 世界大小: {world_size}
 """
 
 import os
@@ -85,6 +90,7 @@ os.environ["WORLD_SIZE"] = "{world_size}"
 def main():
     print(f"Starting node {{os.environ['RANK']}}/{{os.environ['WORLD_SIZE']}}")
     print(f"Connecting to master: {{os.environ['MASTER_ADDR']}}:{{os.environ['MASTER_PORT']}}")
+    print(f"Current node has {nproc_per_node} GPUs" if {nproc_per_node} else "")
     
     # 初始化LLM
     llm = LLM(
@@ -133,17 +139,25 @@ def main():
     parser.add_argument("--create_script", action="store_true", help="Create launch script for each node")
     parser.add_argument("--output_script", type=str, default="node_launch_script.py", help="Output script name")
     parser.add_argument("--node_rank", type=int, default=0, help="Node rank (for create_script)")
+    parser.add_argument("--world_size", type=int, help="Total GPU count across all nodes (required for --create_script)")
+    parser.add_argument("--current_node_gpus", type=int, help="GPU count on current node (optional, for logging)")
     
     args = parser.parse_args()
     
     if args.create_script:
+        if not args.world_size:
+            print("Error: --world_size is required when using --create_script")
+            print("Example: --world_size 10 (for 8 GPUs on Node 1 + 2 GPUs on Node 2)")
+            sys.exit(1)
+        
         create_launch_script(
             master_addr=args.master_addr,
             master_port=args.master_port,
             node_rank=args.node_rank,
-            world_size=args.nnodes * args.nproc_per_node,
+            world_size=args.world_size,
             model_path=args.model_path,
-            output_file=args.output_script
+            output_file=args.output_script,
+            nproc_per_node=args.current_node_gpus
         )
     else:
         if not args.script:

@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 def main(args):
     path = os.path.expanduser(args.model)
     tokenizer = AutoTokenizer.from_pretrained(path)
-    llm = LLM(path, enforce_eager=True, tensor_parallel_size=2)
+    llm = LLM(path, enforce_eager=True, tensor_parallel_size=8)
 
     sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
     prompts = [
