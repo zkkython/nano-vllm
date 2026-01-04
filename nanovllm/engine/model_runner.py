@@ -1,14 +1,11 @@
-import pickle
 import torch
 import torch.distributed as dist
 from multiprocessing.synchronize import Event
-from multiprocessing.shared_memory import SharedMemory
-from nanovllm.utils.distributed import barrier, is_distributed, broadcast_object
+from nanovllm.utils.distributed import broadcast_object
 
 from nanovllm.config import Config
 from nanovllm.engine.sequence import Sequence
 
-# from nanovllm.models.qwen3 import Qwen3ForCausalLM
 from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model
@@ -27,18 +24,33 @@ class ModelRunner:
         self.event = event
 
         # 初始化分布式通信组
-        init_method = f"tcp://{self.config.master_addr}:{self.config.master_port}"
-        dist.init_process_group(
-            backend="nccl", 
-            init_method=init_method,
-            world_size=self.world_size, 
-            rank=rank
-        )
+        if dist.is_initialized():
+            # 如果已经初始化，则使用现有的分布式环境
+            assert dist.get_world_size() == self.world_size
+            assert dist.get_rank() == rank
+        else:
+            if self.world_size > 1:
+                print(
+                    f"[DEBUG] Rank {rank} Initializing new distributed environment",
+                    flush=True,
+                )
+                # 否则初始化新的分布式环境
+                init_method = (
+                    f"tcp://{self.config.master_addr}:{self.config.master_port}"
+                )
+                dist.init_process_group(
+                    backend="nccl",
+                    init_method=init_method,
+                    world_size=self.world_size,
+                    rank=rank,
+                    device_id=rank,
+                )
+                dist.barrier()
         torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
-        # self.model = Qwen3ForCausalLM(hf_config)
+
         self.model = MODELS_MAPPING[hf_config.model_type](hf_config)
         load_model(self.model, config.model)
         self.sampler = Sampler()
@@ -50,45 +62,85 @@ class ModelRunner:
         torch.set_default_dtype(default_dtype)
 
         if self.world_size > 1:
-            # 对于跨机器TP，我们使用分布式通信替代共享内存
-            dist.barrier()
+            if dist.is_initialized():
+                try:
+                    dist.barrier()
+                except Exception:
+                    pass  # barrier可能失败，继续执行
+
             if rank != 0:
                 # 非主rank进入循环处理来自主rank的请求
                 self.loop()
 
     def exit(self):
-        if self.world_size > 1:
-            dist.barrier()
-        if not self.enforce_eager:
-            del self.graphs, self.graph_pool
-        torch.cuda.synchronize()
-        dist.destroy_process_group()
+        """退出并清理资源"""
+        print(f"[DEBUG] {self.rank} ModelRunner exit started", flush=True)
+        try:
+            if not self.enforce_eager:
+                if hasattr(self, "graphs"):
+                    del self.graphs
+                if hasattr(self, "graph_pool"):
+                    del self.graph_pool
+        except Exception:
+            pass
+
+        try:
+            torch.cuda.synchronize()
+            if dist.is_available() and dist.is_initialized():
+                dist.destroy_process_group()
+        except Exception:
+            print(f"[DEBUG] synchronize Exception in exit try block: {e}", flush=True)
+            pass
+
+        print(f"[DEBUG] Rank {self.rank} ModelRunner exit completed", flush=True)
 
     def loop(self):
-        # 在跨机器环境中，非主rank等待主rank的指令
+        # 在分布式环境中，非主rank等待主rank的指令
         # 这里使用分布式通信来协调工作
         while True:
-            # 从主rank接收指令
-            call_data = broadcast_object(None, src=0)  # 从rank 0接收
-            if call_data is None:
+            # 从主rank接收指令 - 使用一个信号来标记是否有真实数据
+            signal = torch.zeros(1, dtype=torch.long, device=f"cuda:{self.rank}")
+            dist.broadcast(signal, src=0)
+
+            if signal.item() == 0:
+                # 信号为0表示没有新指令
                 continue
-            method_name, args = call_data
-            if method_name == "exit":
-                break
-            # 执行方法
-            self.call(method_name, *args)
+
+            # 信号非零表示有新指令，接收指令数据
+            call_data = broadcast_object(None, src=0)
+            if call_data is not None:
+                method_name, args = call_data
+                # 执行方法（非rank 0只执行方法）
+                method = getattr(self, method_name, None)
+                if method:
+                    method(*args)
+                else:
+                    raise AttributeError(f"Method {method_name} not found")
+                # 如果子进程接受到的是exit方法，那么在该方法执行完之后，就需要退出循环了
+                if method_name == "exit":
+                    break
 
     def call(self, method_name, *args):
-        # 使用分布式通信替代共享内存
+        # rank 0主动发送指令给其他rank
         if self.world_size > 1:
-            # 将方法调用参数广播给所有rank
+            if self.rank != 0:
+                raise RuntimeError(
+                    f"call() should only be invoked on rank 0, got rank {self.rank}"
+                )
+
+            # 发送信号：1表示有指令
+            signal = torch.ones(1, dtype=torch.long, device=f"cuda:{self.rank}")
+            dist.broadcast(signal, src=0)
+
+            # 广播指令
             call_data = (method_name, args)
-            call_data = broadcast_object(call_data, src=0)  # 从rank 0广播
-            method_name, args = call_data
-            
+            broadcast_object(call_data, src=0)
+
+        # rank 0直接执行方法
         method = getattr(self, method_name, None)
         if method:
-            return method(*args)
+            result = method(*args)
+            return result
         else:
             raise AttributeError(f"Method {method_name} not found")
 
@@ -284,21 +336,27 @@ class ModelRunner:
         input_ids, positions = (
             self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         )
-        temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
-        
-        # 在分布式环境中，将temperatures广播给所有rank
+
+        # 只在rank 0上准备temperatures
+        temperatures = None
+        if self.rank == 0:
+            temperatures = self.prepare_sample(seqs)
+
+        # 将temperatures广播给所有rank
         temperatures = broadcast_object(temperatures, src=0)
-        
+
         logits = self.run_model(input_ids, positions, is_prefill)
-        token_ids = (
-            self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
-        )
-        
-        # 将结果广播给所有rank，但只在rank 0上返回
+
+        # 只在rank 0上进行采样
+        token_ids = None
+        if self.rank == 0:
+            token_ids = self.sampler(logits, temperatures).tolist()
+
+        # 将结果广播给所有rank
         token_ids = broadcast_object(token_ids, src=0)
-        
+
         reset_context()
-        return token_ids if self.rank == 0 else None
+        return token_ids
 
     @torch.inference_mode()
     def capture_cudagraph(self):

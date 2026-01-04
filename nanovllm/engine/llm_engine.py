@@ -5,60 +5,113 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 import torch.multiprocessing as mp
 import os
-
+import torch.distributed as dist
 from nanovllm.config import Config
 from nanovllm.sampling_params import SamplingParams
 from nanovllm.engine.sequence import Sequence
 from nanovllm.engine.scheduler import Scheduler
 from nanovllm.engine.model_runner import ModelRunner
+import logging
+
+log = logging.getLogger(__name__)
 
 
 class LLMEngine:
 
-    def __init__(self, model, master_addr="localhost", master_port=2333, node_rank=0, **kwargs):
+    def __init__(self, model, master_addr="localhost", master_port=2333, **kwargs):
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
         # 添加分布式相关的配置参数
-        if 'master_addr' not in config_kwargs:
-            config_kwargs['master_addr'] = master_addr
-        if 'master_port' not in config_kwargs:
-            config_kwargs['master_port'] = master_port
-        if 'node_rank' not in config_kwargs:
-            config_kwargs['node_rank'] = node_rank
+        if "master_addr" not in config_kwargs:
+            config_kwargs["master_addr"] = master_addr
+        if "master_port" not in config_kwargs:
+            config_kwargs["master_port"] = master_port
         config = Config(model, **config_kwargs)
-        
-        # 检查是否是分布式运行
-        if config.tensor_parallel_size > 1:
-            # 设置环境变量，以便子进程可以访问
-            os.environ['MASTER_ADDR'] = config.master_addr
-            os.environ['MASTER_PORT'] = str(config.master_port)
-            os.environ['WORLD_SIZE'] = str(config.tensor_parallel_size)
-            
-            self.ps = []
-            self.events = []
-            ctx = mp.get_context("spawn")
-            for i in range(1, config.tensor_parallel_size):
-                event = ctx.Event()
-                process = ctx.Process(target=ModelRunner, args=(config, i, event))
-                process.start()
-                self.ps.append(process)
-                self.events.append(event)
-            self.model_runner = ModelRunner(config, 0, self.events)
+
+        # 检查是否已经通过torchrun等方式启动了分布式环境
+        if dist.is_available() and dist.is_initialized():
+            print("[DEBUG] Distributed environment detected", flush=True)
+            # 如果已经初始化了分布式环境，使用现有的配置
+            config.tensor_parallel_size = dist.get_world_size()
+            local_rank = dist.get_rank()
+
+            # 只在rank 0上启动其他rank的进程（单机多卡情况）
+            # 或者在分布式环境中每个rank都运行自己的ModelRunner
+            self.model_runner = ModelRunner(config, local_rank, None)
         else:
-            self.ps = []
-            self.events = []
-            self.model_runner = ModelRunner(config, 0, self.events)
-            
+            # 否则使用原来的多进程方式（主要用于单机多卡）
+            if config.tensor_parallel_size > 1:
+                # 设置环境变量，以便子进程可以访问
+                os.environ["MASTER_ADDR"] = config.master_addr
+                os.environ["MASTER_PORT"] = str(config.master_port)
+                os.environ["WORLD_SIZE"] = str(config.tensor_parallel_size)
+
+                self.ps = []
+                self.events = []
+                ctx = mp.get_context("spawn")
+                for i in range(1, config.tensor_parallel_size):
+                    event = ctx.Event()
+                    process = ctx.Process(target=ModelRunner, args=(config, i, event))
+                    process.start()
+                    self.ps.append(process)
+                    self.events.append(event)
+                self.model_runner = ModelRunner(config, 0, self.events)
+            else:
+                self.ps = []
+                self.events = []
+                self.model_runner = ModelRunner(config, 0, self.events)
+
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
         self.scheduler = Scheduler(config)
-        atexit.register(self.exit)
+        self.world_size = config.tensor_parallel_size
+        self._exited = False
+
+        # 注册自动退出处理 - 使用实例编号确保只注册一次
+        import sys
+
+        atexit_key = f"_llm_atexit_registered_{id(self)}"
+        if not getattr(sys, atexit_key, False):
+            atexit.register(self.exit)
+            setattr(sys, atexit_key, True)
 
     def exit(self):
-        self.model_runner.call("exit")
-        del self.model_runner
-        for p in self.ps:
-            p.join()
+        print(f"[DEBUG] LLMEngine.exit() called, _exited={self._exited}", flush=True)
+        """优雅退出，清理所有资源"""
+        # 防止重复调用
+        if self._exited:
+            print("[DEBUG] Already exited, returning", flush=True)
+            return
+        self._exited = True
+
+        try:
+            # 子进程是守护进程，会自动清理
+            if dist.is_initialized():
+                print(f"[DEBUG] world_size={self.world_size}", flush=True)
+                self.model_runner.call("exit")
+        except Exception as e:
+            print(f"[DEBUG] Exception in exit try block: {e}", flush=True)
+            pass
+        finally:
+            # 清理Event对象资源
+            try:
+                print("[DEBUG] Cleaning up events", flush=True)
+                if hasattr(self, "events") and self.events:
+                    print(f"[DEBUG] Found {len(self.events)} events", flush=True)
+                    for event in self.events:
+                        # 关闭event以释放底层信号量资源
+                        try:
+                            if hasattr(event, "close"):
+                                event.close()
+                        except Exception as e:
+                            print(f"[DEBUG] Error closing event: {e}", flush=True)
+                    self.events.clear()
+                    print("[DEBUG] Events cleared", flush=True)
+            except Exception as e:
+                print(f"[DEBUG] Error cleaning events: {e}", flush=True)
+                pass
+
+        print("[DEBUG] LLMEngine.exit() completed", flush=True)
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
         if isinstance(prompt, str):
@@ -70,7 +123,9 @@ class LLMEngine:
         seqs, is_prefill = self.scheduler.schedule()
         token_ids = self.model_runner.call("run", seqs, is_prefill)
         self.scheduler.postprocess(seqs, token_ids)
-        outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
+        outputs = [
+            (seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished
+        ]
         num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -len(seqs)
         return outputs, num_tokens
 
@@ -90,7 +145,7 @@ class LLMEngine:
         for prompt, sp in zip(prompts, sampling_params):
             self.add_request(prompt, sp)
         outputs = {}
-        prefill_throughput = decode_throughput = 0.
+        prefill_throughput = decode_throughput = 0.0
         while not self.is_finished():
             t = perf_counter()
             output, num_tokens = self.step()
@@ -99,16 +154,21 @@ class LLMEngine:
                     prefill_throughput = num_tokens / (perf_counter() - t)
                 else:
                     decode_throughput = -num_tokens / (perf_counter() - t)
-                pbar.set_postfix({
-                    "Prefill": f"{int(prefill_throughput)}tok/s",
-                    "Decode": f"{int(decode_throughput)}tok/s",
-                })
+                pbar.set_postfix(
+                    {
+                        "Prefill": f"{int(prefill_throughput)}tok/s",
+                        "Decode": f"{int(decode_throughput)}tok/s",
+                    }
+                )
             for seq_id, token_ids in output:
                 outputs[seq_id] = token_ids
                 if use_tqdm:
                     pbar.update(1)
         outputs = [outputs[seq_id] for seq_id in sorted(outputs)]
-        outputs = [{"text": self.tokenizer.decode(token_ids), "token_ids": token_ids} for token_ids in outputs]
+        outputs = [
+            {"text": self.tokenizer.decode(token_ids), "token_ids": token_ids}
+            for token_ids in outputs
+        ]
         if use_tqdm:
             pbar.close()
         return outputs
