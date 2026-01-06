@@ -20,9 +20,10 @@ class ModelRunner:
         self.enforce_eager = config.enforce_eager
         self.world_size = config.tensor_parallel_size
         self.rank = rank
-        # 如果没有指定local_rank，则假设local_rank等于rank（单机情况）
+        # 如果没有指定local_rank，则根据world_size计算local_rank
         if local_rank is None:
-            local_rank = rank
+            # local_rank应该是rank对world_size取模的结果
+            local_rank = rank % torch.cuda.device_count()
         self.local_rank = local_rank
 
         # 初始化分布式通信组
@@ -48,19 +49,24 @@ class ModelRunner:
                 init_method = (
                     f"tcp://{self.config.master_addr}:{self.config.master_port}"
                 )
+                # 确保device_id在可用GPU范围内
+                actual_device_id = local_rank % torch.cuda.device_count()
                 dist.init_process_group(
                     backend="nccl",
                     init_method=init_method,
                     world_size=self.world_size,
                     rank=rank,
-                    device_id=local_rank,
+                    device_id=actual_device_id,
                 )
                 print(
                     f"[DEBUG] Rank {rank} (local_rank={local_rank}) Distributed environment initialized",
                     flush=True,
                 )
 
-        torch.cuda.set_device(local_rank)
+        # 确保local_rank在可用GPU范围内
+        num_gpus = torch.cuda.device_count()
+        actual_local_rank = local_rank % num_gpus
+        torch.cuda.set_device(actual_local_rank)
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
@@ -102,7 +108,7 @@ class ModelRunner:
             torch.cuda.synchronize()
             if dist.is_available() and dist.is_initialized():
                 dist.destroy_process_group()
-        except Exception:
+        except Exception as e:
             print(f"[DEBUG] synchronize Exception in exit try block: {e}", flush=True)
             pass
 
@@ -113,7 +119,8 @@ class ModelRunner:
         # 这里使用分布式通信来协调工作
         while True:
             # 从主rank接收指令 - 使用一个信号来标记是否有真实数据
-            signal = torch.zeros(1, dtype=torch.long, device=f"cuda:{self.local_rank}")
+            actual_device_id = self.local_rank % torch.cuda.device_count()
+            signal = torch.zeros(1, dtype=torch.long, device=f"cuda:{actual_device_id}")
             dist.broadcast(signal, src=0)
 
             if signal.item() == 0:
@@ -143,7 +150,8 @@ class ModelRunner:
                 )
 
             # 发送信号：1表示有指令
-            signal = torch.ones(1, dtype=torch.long, device=f"cuda:{self.local_rank}")
+            actual_device_id = self.local_rank % torch.cuda.device_count()
+            signal = torch.ones(1, dtype=torch.long, device=f"cuda:{actual_device_id}")
             dist.broadcast(signal, src=0)
 
             # 广播指令
