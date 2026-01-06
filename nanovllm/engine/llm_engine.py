@@ -66,19 +66,27 @@ class LLMEngine:
                 for i in range(1, config.tensor_parallel_size):
                     # 单机多卡时，local_rank应该限制在本地GPU范围内
                     # 如果i超出了本地GPU数量，则使用i % 本地GPU数
-                    num_local_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+                    num_local_gpus = (
+                        torch.cuda.device_count() if torch.cuda.is_available() else 1
+                    )
                     local_rank = i % num_local_gpus
-                    process = ctx.Process(target=ModelRunner, args=(config, i, local_rank))
+                    process = ctx.Process(
+                        target=ModelRunner, args=(config, i, local_rank)
+                    )
                     process.start()
                     self.ps.append(process)
 
                 # 主进程也应使用正确的local_rank
-                num_local_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+                num_local_gpus = (
+                    torch.cuda.device_count() if torch.cuda.is_available() else 1
+                )
                 main_local_rank = 0 % num_local_gpus  # 对于rank 0，local_rank总是0
                 self.model_runner = ModelRunner(config, 0, main_local_rank)
             else:
                 # 单GPU情况也要使用正确的local_rank
-                num_local_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+                num_local_gpus = (
+                    torch.cuda.device_count() if torch.cuda.is_available() else 1
+                )
                 main_local_rank = 0 % num_local_gpus  # 对于rank 0，local_rank总是0
                 self.model_runner = ModelRunner(config, 0, main_local_rank)
 

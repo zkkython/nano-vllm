@@ -33,12 +33,38 @@ class ModelRunner:
                 f"[DEBUG] Rank {rank} (local_rank={local_rank}) Distributed environment already initialized by torchrun",
                 flush=True,
             )
+            print(
+                f"[DEBUG] Rank {rank}: Available GPUs = {torch.cuda.device_count()}, local_rank = {local_rank}",
+                flush=True,
+            )
             assert (
                 dist.get_world_size() == self.world_size
             ), f"World size mismatch: expected {self.world_size}, got {dist.get_world_size()}"
             assert (
                 dist.get_rank() == rank
             ), f"Rank mismatch: expected {rank}, got {dist.get_rank()}"
+
+            # 重要：即使分布式环境已初始化，我们仍需要设置正确的CUDA设备
+            # 确保local_rank在可用GPU范围内
+            num_gpus = torch.cuda.device_count()
+            if local_rank >= num_gpus:
+                # 如果local_rank超出了本地GPU数量，使用rank对本地GPU数取模
+                actual_local_rank = rank % num_gpus
+                print(
+                    f"[WARNING] Rank {rank}: local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_local_rank} based on rank % num_gpus",
+                    flush=True,
+                )
+            else:
+                actual_local_rank = local_rank
+
+            # 立即设置CUDA设备，确保后续操作使用正确的GPU
+            torch.cuda.set_device(actual_local_rank)
+            # 保存实际使用的设备ID，供后续使用
+            self.actual_device_id = actual_local_rank
+            print(
+                f"[DEBUG] Rank {rank}: Set CUDA device to {actual_local_rank} (torch.cuda.current_device() = {torch.cuda.current_device()})",
+                flush=True,
+            )
         else:
             if self.world_size > 1:
                 print(
@@ -54,7 +80,10 @@ class ModelRunner:
                 if local_rank >= num_gpus:
                     # 如果local_rank超出了本地GPU数量，使用rank对本地GPU数取模
                     actual_device_id = rank % num_gpus
-                    print(f"[WARNING] local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_device_id} based on rank % num_gpus", flush=True)
+                    print(
+                        f"[WARNING] local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_device_id} based on rank % num_gpus",
+                        flush=True,
+                    )
                 else:
                     actual_device_id = local_rank
                 dist.init_process_group(
@@ -69,15 +98,38 @@ class ModelRunner:
                     flush=True,
                 )
 
-        # 确保local_rank在可用GPU范围内
-        num_gpus = torch.cuda.device_count()
-        if local_rank >= num_gpus:
-            # 如果local_rank超出了本地GPU数量，使用rank对本地GPU数取模
-            actual_local_rank = rank % num_gpus
-            print(f"[WARNING] local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_local_rank} based on rank % num_gpus", flush=True)
-        else:
-            actual_local_rank = local_rank
-        torch.cuda.set_device(actual_local_rank)
+                # 立即设置CUDA设备
+                num_gpus = torch.cuda.device_count()
+                if local_rank >= num_gpus:
+                    actual_local_rank = rank % num_gpus
+                    print(
+                        f"[WARNING] Rank {rank}: local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_local_rank}",
+                        flush=True,
+                    )
+                else:
+                    actual_local_rank = local_rank
+                torch.cuda.set_device(actual_local_rank)
+                # 保存实际使用的设备ID，供后续使用
+                self.actual_device_id = actual_local_rank
+                print(
+                    f"[DEBUG] Rank {rank}: Set CUDA device to {actual_local_rank}",
+                    flush=True,
+                )
+            else:
+                # 单GPU情况，直接设置设备
+                num_gpus = torch.cuda.device_count()
+                if local_rank >= num_gpus:
+                    actual_local_rank = 0  # 单GPU默认使用设备 0
+                else:
+                    actual_local_rank = local_rank
+                torch.cuda.set_device(actual_local_rank)
+                self.actual_device_id = actual_local_rank
+                print(
+                    f"[DEBUG] Rank {rank}: Single GPU mode, set CUDA device to {actual_local_rank}",
+                    flush=True,
+                )
+
+        # CUDA设备已经在上面设置好了，这里不需要重复设置
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
@@ -130,11 +182,8 @@ class ModelRunner:
         # 这里使用分布式通信来协调工作
         while True:
             # 从主rank接收指令 - 使用一个信号来标记是否有真实数据
-            num_gpus = torch.cuda.device_count()
-            if self.local_rank >= num_gpus:
-                actual_device_id = self.rank % num_gpus
-            else:
-                actual_device_id = self.local_rank
+            # 使用初始化时保存的实际设备ID
+            actual_device_id = self.actual_device_id
             signal = torch.zeros(1, dtype=torch.long, device=f"cuda:{actual_device_id}")
             dist.broadcast(signal, src=0)
 
@@ -165,11 +214,8 @@ class ModelRunner:
                 )
 
             # 发送信号：1表示有指令
-            num_gpus = torch.cuda.device_count()
-            if self.local_rank >= num_gpus:
-                actual_device_id = self.rank % num_gpus
-            else:
-                actual_device_id = self.local_rank
+            # 使用初始化时保存的实际设备ID
+            actual_device_id = self.actual_device_id
             signal = torch.ones(1, dtype=torch.long, device=f"cuda:{actual_device_id}")
             dist.broadcast(signal, src=0)
 
