@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
 多机TP并行启动脚本 - Node2
-使用方式: torchrun --nnodes=2 --nproc_per_node=2 --master_addr=115.190.188.193 \
+使用方式: torchrun --nnodes=2 --nproc_per_node=2 --master_addr=192.168.0.163 \
             --master_port=2333 --node_rank=1 node2_launch.py
 """
 
 import os
-import torch
-import torch.distributed as dist
-import time
-from nanovllm import LLM
-from nanovllm.sampling_params import SamplingParams
 
 
 def main():
@@ -18,7 +13,7 @@ def main():
     rank = int(os.environ.get("RANK", 0))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
-    master_addr = os.environ.get("MASTER_ADDR", "115.190.188.193")
+    master_addr = os.environ.get("MASTER_ADDR", "192.168.0.163")
     master_port = int(os.environ.get("MASTER_PORT", 2333))
 
     # 设置 NCCL 环境变量以改善跨节点通信
@@ -40,6 +35,7 @@ def main():
         f"[Node2] Rank {rank} (global rank {rank}) initialized."
         f"\n[DEBUG] ModelRunner.loop() will wait for broadcast signals from rank 0"
     )
+
 
 if __name__ == "__main__":
     main()

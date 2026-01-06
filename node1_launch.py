@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
 多机TP并行启动脚本 - Node1
-使用方式: torchrun --nnodes=2 --nproc_per_node=8 --master_addr=115.190.188.193 \
+使用方式: torchrun --nnodes=2 --nproc_per_node=8 --master_addr=192.168.0.163 \
             --master_port=2333 --node_rank=0 node1_launch.py
 """
 
 import os
-import torch
-import torch.distributed as dist
 import time
 from nanovllm import LLM
 from nanovllm.sampling_params import SamplingParams
@@ -18,7 +16,7 @@ def main():
     rank = int(os.environ.get("RANK", 0))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
-    master_addr = os.environ.get("MASTER_ADDR", "115.190.188.193")
+    master_addr = os.environ.get("MASTER_ADDR", "192.168.0.163")
     master_port = int(os.environ.get("MASTER_PORT", 2333))
 
     # 设置 NCCL 环境变量以改善跨节点通信
@@ -28,7 +26,7 @@ def main():
     os.environ.setdefault("NCCL_SOCKET_IFNAME", "eth0")  # 或者 en0、ens33 等
     os.environ.setdefault("NCCL_DEBUG", "INFO")  # 打开 NCCL 调试消息
     os.environ.setdefault("NCCL_BLOCKING_WAIT", "1")  # 使用1秒阻塞等待
-    
+
     print(
         f"[Node1] Starting process rank={rank}, local_rank={local_rank}, world_size={world_size}"
     )
@@ -62,8 +60,10 @@ def main():
         print(f"[Node1] Rank 0 finished.")
     else:
         # 其他rank等待主rank的指令
-        print(f"[Node1] Rank {rank} waiting for tasks from rank 0..."
-              f"\n[DEBUG] ModelRunner.loop() will wait for broadcast signals")
+        print(
+            f"[Node1] Rank {rank} waiting for tasks from rank 0..."
+            f"\n[DEBUG] ModelRunner.loop() will wait for broadcast signals"
+        )
 
 
 if __name__ == "__main__":
