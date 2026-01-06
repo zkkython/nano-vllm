@@ -20,10 +20,10 @@ class ModelRunner:
         self.enforce_eager = config.enforce_eager
         self.world_size = config.tensor_parallel_size
         self.rank = rank
-        # 如果没有指定local_rank，则根据world_size计算local_rank
+        # 如果没有指定local_rank，则使用rank作为local_rank（适用于单机情况）
+        # 在多机环境中，应该通过环境变量或参数传入正确的local_rank
         if local_rank is None:
-            # local_rank应该是rank对world_size取模的结果
-            local_rank = rank % torch.cuda.device_count()
+            local_rank = rank
         self.local_rank = local_rank
 
         # 初始化分布式通信组
@@ -50,7 +50,13 @@ class ModelRunner:
                     f"tcp://{self.config.master_addr}:{self.config.master_port}"
                 )
                 # 确保device_id在可用GPU范围内
-                actual_device_id = local_rank % torch.cuda.device_count()
+                num_gpus = torch.cuda.device_count()
+                if local_rank >= num_gpus:
+                    # 如果local_rank超出了本地GPU数量，使用rank对本地GPU数取模
+                    actual_device_id = rank % num_gpus
+                    print(f"[WARNING] local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_device_id} based on rank % num_gpus", flush=True)
+                else:
+                    actual_device_id = local_rank
                 dist.init_process_group(
                     backend="nccl",
                     init_method=init_method,
@@ -65,7 +71,12 @@ class ModelRunner:
 
         # 确保local_rank在可用GPU范围内
         num_gpus = torch.cuda.device_count()
-        actual_local_rank = local_rank % num_gpus
+        if local_rank >= num_gpus:
+            # 如果local_rank超出了本地GPU数量，使用rank对本地GPU数取模
+            actual_local_rank = rank % num_gpus
+            print(f"[WARNING] local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_local_rank} based on rank % num_gpus", flush=True)
+        else:
+            actual_local_rank = local_rank
         torch.cuda.set_device(actual_local_rank)
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
@@ -119,7 +130,11 @@ class ModelRunner:
         # 这里使用分布式通信来协调工作
         while True:
             # 从主rank接收指令 - 使用一个信号来标记是否有真实数据
-            actual_device_id = self.local_rank % torch.cuda.device_count()
+            num_gpus = torch.cuda.device_count()
+            if self.local_rank >= num_gpus:
+                actual_device_id = self.rank % num_gpus
+            else:
+                actual_device_id = self.local_rank
             signal = torch.zeros(1, dtype=torch.long, device=f"cuda:{actual_device_id}")
             dist.broadcast(signal, src=0)
 
@@ -150,7 +165,11 @@ class ModelRunner:
                 )
 
             # 发送信号：1表示有指令
-            actual_device_id = self.local_rank % torch.cuda.device_count()
+            num_gpus = torch.cuda.device_count()
+            if self.local_rank >= num_gpus:
+                actual_device_id = self.rank % num_gpus
+            else:
+                actual_device_id = self.local_rank
             signal = torch.ones(1, dtype=torch.long, device=f"cuda:{actual_device_id}")
             dist.broadcast(signal, src=0)
 
