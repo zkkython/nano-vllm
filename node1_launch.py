@@ -49,7 +49,7 @@ def main():
         time.sleep(3)  # 给Worker rank足够的时间来初始化
 
         # 示例推理
-        sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+        sampling_params = SamplingParams(temperature=0.8)
         prompts = ["Hello, how are you?", "What is machine learning?"]
 
         print(f"[Node1] Rank 0 executing inference...")
