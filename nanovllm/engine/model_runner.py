@@ -301,9 +301,11 @@ class ModelRunner:
 
     def prepare_block_tables(self, seqs: list[Sequence]):
         max_len = max(len(seq.block_table) for seq in seqs)
+        # KV 补全，补齐到最大的KV Cache table 个数
         block_tables = [
             seq.block_table + [-1] * (max_len - len(seq.block_table)) for seq in seqs
         ]
+        # (bs, max_len)
         block_tables = torch.tensor(
             block_tables, dtype=torch.int32, pin_memory=True
         ).cuda(non_blocking=True)
@@ -319,15 +321,21 @@ class ModelRunner:
         slot_mapping = []
         block_tables = None
         for seq in seqs:
-            seqlen = len(seq)
-            input_ids.extend(seq[seq.num_cached_tokens :])
-            positions.extend(list(range(seq.num_cached_tokens, seqlen)))
-            seqlen_q = seqlen - seq.num_cached_tokens
-            seqlen_k = seqlen
-            cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
-            cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
-            max_seqlen_q = max(seqlen_q, max_seqlen_q)
-            max_seqlen_k = max(seqlen_k, max_seqlen_k)
+            seqlen = len(seq)  # prompt 长度
+            input_ids.extend(seq[seq.num_cached_tokens :])  # 真正执行prefill的input ids
+            positions.extend(list(range(seq.num_cached_tokens, seqlen)))  # 位置
+            seqlen_q = seqlen - seq.num_cached_tokens  # query 的长度
+            seqlen_k = seqlen  # k 是需要全部的
+            cu_seqlens_q.append(
+                cu_seqlens_q[-1] + seqlen_q
+            )  # 记录每一个seq 对应的query的长度（去掉缓存的，真正计算attn的长度），不过一直在累加
+            cu_seqlens_k.append(
+                cu_seqlens_k[-1] + seqlen_k
+            )  # 记录每一个seq的k的长度，不过一直在累加
+            max_seqlen_q = max(
+                seqlen_q, max_seqlen_q
+            )  # 记录这一批reqs 最大的query的长度
+            max_seqlen_k = max(seqlen_k, max_seqlen_k)  # 记录这一批reqs 最大的k的长度
             if not seq.block_table:
                 continue
             for i in range(seq.num_cached_blocks, seq.num_blocks):
@@ -336,12 +344,14 @@ class ModelRunner:
                     end = start + self.block_size
                 else:
                     end = start + seq.last_block_num_tokens
-                slot_mapping.extend(list(range(start, end)))
+                slot_mapping.extend(
+                    list(range(start, end))
+                )  # slot_mapping 记录seq 每一个block的起点和终点 token index
         if cu_seqlens_k[-1] > cu_seqlens_q[-1]:  # prefix cache
-            block_tables = self.prepare_block_tables(seqs)
+            block_tables = self.prepare_block_tables(seqs)  # (bs, max_seq_len)
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(
             non_blocking=True
-        )
+        )  # (len1+len22+len3...,)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(
             non_blocking=True
         )
@@ -372,9 +382,12 @@ class ModelRunner:
         slot_mapping = []
         context_lens = []
         for seq in seqs:
-            input_ids.append(seq.last_token)
-            positions.append(len(seq))
-            context_lens.append(len(seq))
+            input_ids.append(
+                seq.last_token
+            )  # 每次添加单个token，上一次推理出的词作为输入
+            positions.append(len(seq))  # 位置是动态那个动态的值
+            context_lens.append(len(seq))  # context_lens 记录每一个seq 的动态长度
+            # 最后一个块的最后一个token的位置
             slot_mapping.append(
                 seq.block_table[-1] * self.block_size + seq.last_block_num_tokens - 1
             )
@@ -442,7 +455,7 @@ class ModelRunner:
         if self.rank == 0:
             temperatures = self.prepare_sample(seqs)
 
-        # 将temperatures广播给所有rank
+        # 将temperatures广播给所有rank, 感觉不用广播
         temperatures = broadcast_object(temperatures, src=0)
 
         logits = self.run_model(input_ids, positions, is_prefill)
@@ -452,7 +465,7 @@ class ModelRunner:
         if self.rank == 0:
             token_ids = self.sampler(logits, temperatures).tolist()
 
-        # 将结果广播给所有rank
+        # 将结果广播给所有rank，感觉不用广播，只有rank = 0的节点才会和客户端打交道
         token_ids = broadcast_object(token_ids, src=0)
 
         reset_context()
