@@ -7,3 +7,12 @@ print(a.item())
 
 b = torch.ones(1)
 print(b)
+
+
+d=[]
+d.extend([1,23])
+d.extend([4,5])
+print(d)
+
+
+print([-1] * 5)
