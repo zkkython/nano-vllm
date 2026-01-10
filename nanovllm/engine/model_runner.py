@@ -141,6 +141,12 @@ class ModelRunner:
                     f"[DEBUG] Rank {rank}: Single GPU mode, set CUDA device to {actual_local_rank}",
                     flush=True,
                 )
+                dist.init_process_group(
+                    "nccl",
+                    "tcp://localhost:2333",
+                    world_size=self.world_size,
+                    rank=rank,
+                )
 
         # CUDA设备已经在上面设置好了，这里不需要重复设置
         default_dtype = torch.get_default_dtype()
@@ -328,7 +334,7 @@ class ModelRunner:
             seqlen_k = seqlen  # k 是需要全部的
             cu_seqlens_q.append(
                 cu_seqlens_q[-1] + seqlen_q
-            )  # 记录每一个seq 对应的query的长度（去掉缓存的，真正计算attn的长度），不过一直在累加
+            )  # 记录每一个seq 对应的query的长度（去掉缓存的，真正计算attn的长度），不过一直在累加, 目的是后面在compute_logts的时候，找到每一个requets最后的位置，用于塞新的token到该位置上
             cu_seqlens_k.append(
                 cu_seqlens_k[-1] + seqlen_k
             )  # 记录每一个seq的k的长度，不过一直在累加
