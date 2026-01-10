@@ -59,7 +59,7 @@ class Scheduler:
             return scheduled_seqs, True
 
         # decode, 拿到decoding的requests 给model runner执行, 能进到decode 说明一定没有prefill的请求
-        while self.running and num_seqs < self.max_num_seqs and len(self.waiting) == 0:
+        while self.running and num_seqs < self.max_num_seqs:
             seq = self.running.popleft()
             while not self.block_manager.can_append(seq):
                 if self.running:

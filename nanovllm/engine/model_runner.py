@@ -352,7 +352,7 @@ class ModelRunner:
                     end = start + seq.last_block_num_tokens
                 slot_mapping.extend(
                     list(range(start, end))
-                )  # slot_mapping 记录seq 每一个block的起点和终点 token index
+                )  # slot_mapping 告诉 kernel「新 token → KV Cache 位置」
         if cu_seqlens_k[-1] > cu_seqlens_q[-1]:  # prefix cache
             block_tables = self.prepare_block_tables(seqs)  # (bs, max_seq_len)
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(
@@ -393,7 +393,24 @@ class ModelRunner:
             )  # 每次添加单个token，上一次推理出的词作为输入
             positions.append(len(seq))  # 位置是动态那个动态的值
             context_lens.append(len(seq))  # context_lens 记录每一个seq 的动态长度
-            # 最后一个块的最后一个token的位置
+            # 告诉 kernel「新 token → KV Cache 位置」，decode做完生成新的token时，只是生成了token，但是还没写入k,vcache，所以需要
+            # 在下一次forward的时候，写入kvcache，所以就需要给出的kvcache的位置-1
+            """
+            看一下 decode 的时序（结合 Scheduler 和 ModelRunner.prepare_decode）：
+            上一步已经做完一次 forward + sampling：
+            新采样出来的 token 已经通过 seq.append_token(token_id) 加到了 Sequence 里
+            所以现在的 len(seq)、seq.last_token 都已经包含了这个新 token
+            但是：这个新 token 的 KV 还没写进 KV cache（因为 KV 只有在 forward 里面 store_kvcache 时才会写入）
+            本次 prepare_decode 做的事是：
+            用 seq.last_token 作为 input_ids，再 forward 一次；
+            在 Attention.forward 里，会先调用
+            python
+            store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
+            把“这一步的 token”（也就是当前 `last_token`）的 KV 写到 KV cache 里对应的 slot。
+            所以，slot_mapping 现在应该指向的就是：
+            “当前这条序列里最后一个 token（last_token）在全局 KV cache 中的下标”
+            而不是“下一个还没生成的 token 的位置”。
+            """
             slot_mapping.append(
                 seq.block_table[-1] * self.block_size + seq.last_block_num_tokens - 1
             )
@@ -409,7 +426,20 @@ class ModelRunner:
         context_lens = torch.tensor(
             context_lens, dtype=torch.int32, pin_memory=True
         ).cuda(non_blocking=True)
+        # 补齐
         block_tables = self.prepare_block_tables(seqs)
+        # 历史 token 的 K/V 已经在 paged KV cache (k_cache / v_cache) 里，block_tables 告诉 kernel 用的是哪些块
+        # context_lens 告诉 kernel：这些块里有多少真实的 token 需要参与 attention
+        """
+        context_lens 是一个 shape 为 [batch_size] 的一维 tensor
+        第 i 个元素就是第 i 条 seq 的当前长度，也就是 len(seq)，等于 Sequence.num_tokens
+        在 decode 阶段，每个 step 只喂进去 last_token，但注意力需要对“之前所有 token + 当前 token”做自注意力
+        历史 token 的 K/V 已经在 paged KV cache (k_cache / v_cache) 里
+        block_tables 告诉 kernel 用的是哪些块
+        context_lens 告诉 kernel：这些块里有多少真实的 token 需要参与 attention
+        flash_attn_with_kvcache 的 cache_seqlens 参数就是干这个用的：变长 batch + 正确的 causal mask + 不用去看 cache 中还没写入的空位。
+
+        """
         set_context(
             False,
             slot_mapping=slot_mapping,
@@ -462,7 +492,7 @@ class ModelRunner:
             temperatures = self.prepare_sample(seqs)
 
         # 将temperatures广播给所有rank, 感觉不用广播
-        temperatures = broadcast_object(temperatures, src=0)
+        # temperatures = broadcast_object(temperatures, src=0)
 
         logits = self.run_model(input_ids, positions, is_prefill)
 
@@ -472,7 +502,7 @@ class ModelRunner:
             token_ids = self.sampler(logits, temperatures).tolist()
 
         # 将结果广播给所有rank，感觉不用广播，只有rank = 0的节点才会和客户端打交道
-        token_ids = broadcast_object(token_ids, src=0)
+        # token_ids = broadcast_object(token_ids, src=0)
 
         reset_context()
         return token_ids

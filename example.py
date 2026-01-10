@@ -14,8 +14,9 @@ def main(args):
 
     sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
     prompts = [
-        "introduce yourself",
-        "list all prime numbers within 100",
+        "请用中文介绍你自己, 50个字内",
+        "列举出100以内的质数, 50个字内",
+        "解析下量子力学, 50个字内",
     ]
     prompts = [
         tokenizer.apply_chat_template(

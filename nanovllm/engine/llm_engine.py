@@ -155,20 +155,26 @@ class LLMEngine:
             self.add_request(prompt, sp)
         outputs = {}
         prefill_throughput = decode_throughput = 0.0
+        last_update_time = 0.0
         while not self.is_finished():
             t = perf_counter()
             output, num_tokens = self.step()
             if use_tqdm:
+                now = perf_counter()
                 if num_tokens > 0:
-                    prefill_throughput = num_tokens / (perf_counter() - t)
-                else:
-                    decode_throughput = -num_tokens / (perf_counter() - t)
-                pbar.set_postfix(
-                    {
-                        "Prefill": f"{int(prefill_throughput)}tok/s",
-                        "Decode": f"{int(decode_throughput)}tok/s",
-                    }
-                )
+                    prefill_throughput = num_tokens / (now - t)
+                elif num_tokens < 0:
+                    decode_throughput = -num_tokens / (now - t)
+                
+                # 限制刷新频率，避免在非 TTY 环境下产生大量日志
+                if now - last_update_time >= 0.1:
+                    pbar.set_postfix(
+                        {
+                            "Prefill": f"{int(prefill_throughput)}tok/s",
+                            "Decode": f"{int(decode_throughput)}tok/s",
+                        }
+                    )
+                    last_update_time = now
             for seq_id, token_ids in output:
                 outputs[seq_id] = token_ids
                 if use_tqdm:
