@@ -9,11 +9,18 @@ from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model
 from nanovllm.models.models_mapping import MODELS_MAPPING
+from nanovllm.log_config import (
+    log_debug,
+    log_info,
+    log_warning,
+    get_log_config,
+    should_log,
+)
 
 
 class ModelRunner:
 
-    def __init__(self, config: Config, rank: int, local_rank: int = None):
+    def __init__(self, config: Config, rank: int, local_rank: int):
         self.config = config
         hf_config = config.hf_config
         self.block_size = config.kvcache_block_size
@@ -27,23 +34,26 @@ class ModelRunner:
         self.local_rank = local_rank
 
         # 添加调试信息，看看进入了哪个分支
-        print(
-            f"[DEBUG] ModelRunner.__init__: rank={rank}, local_rank={local_rank}, "
+        log_debug(
+            "model_runner",
+            f"ModelRunner.__init__: rank={rank}, local_rank={local_rank}, "
             f"world_size={self.world_size}, dist.is_initialized()={dist.is_initialized()}, "
             f"available_gpus={torch.cuda.device_count()}",
-            flush=True,
+            rank=rank,
         )
 
         # 初始化分布式通信组
         if dist.is_initialized():
             # 如果已经初始化（通过torchrun），则使用现有的分布式环境
-            print(
-                f"[DEBUG] Rank {rank} (local_rank={local_rank}) Distributed environment already initialized by torchrun",
-                flush=True,
+            log_debug(
+                "model_runner",
+                f"Rank {rank} (local_rank={local_rank}) Distributed environment already initialized by torchrun",
+                rank=rank,
             )
-            print(
-                f"[DEBUG] Rank {rank}: Available GPUs = {torch.cuda.device_count()}, local_rank = {local_rank}",
-                flush=True,
+            log_debug(
+                "model_runner",
+                f"Rank {rank}: Available GPUs = {torch.cuda.device_count()}, local_rank = {local_rank}",
+                rank=rank,
             )
             assert (
                 dist.get_world_size() == self.world_size
@@ -58,9 +68,10 @@ class ModelRunner:
             if local_rank >= num_gpus:
                 # 如果local_rank超出了本地GPU数量，使用rank对本地GPU数取模
                 actual_local_rank = rank % num_gpus
-                print(
-                    f"[WARNING] Rank {rank}: local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_local_rank} based on rank % num_gpus",
-                    flush=True,
+                log_warning(
+                    "model_runner",
+                    f"Rank {rank}: local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_local_rank} based on rank % num_gpus",
+                    rank=rank,
                 )
             else:
                 actual_local_rank = local_rank
@@ -69,15 +80,17 @@ class ModelRunner:
             torch.cuda.set_device(actual_local_rank)
             # 保存实际使用的设备ID，供后续使用
             self.actual_device_id = actual_local_rank
-            print(
-                f"[DEBUG] Rank {rank}: Set CUDA device to {actual_local_rank} (torch.cuda.current_device() = {torch.cuda.current_device()})",
-                flush=True,
+            log_debug(
+                "model_runner",
+                f"Rank {rank}: Set CUDA device to {actual_local_rank} (torch.cuda.current_device() = {torch.cuda.current_device()})",
+                rank=rank,
             )
         else:
             if self.world_size > 1:
-                print(
-                    f"[DEBUG] Rank {rank} (local_rank={local_rank}) Initializing new distributed environment",
-                    flush=True,
+                log_debug(
+                    "model_runner",
+                    f"Rank {rank} (local_rank={local_rank}) Initializing new distributed environment",
+                    rank=rank,
                 )
                 # 否则初始化新的分布式环境（单机多卡情况）
                 init_method = (
@@ -85,29 +98,33 @@ class ModelRunner:
                 )
                 # 确保device_id在可用GPU范围内
                 num_gpus = torch.cuda.device_count()
-                print(
-                    f"[DEBUG] Rank {rank}: Before device_id calculation - local_rank={local_rank}, num_gpus={num_gpus}",
-                    flush=True,
+                log_debug(
+                    "model_runner",
+                    f"Rank {rank}: Before device_id calculation - local_rank={local_rank}, num_gpus={num_gpus}",
+                    rank=rank,
                 )
                 if local_rank >= num_gpus:
                     # 如果local_rank超出了本地GPU数量，使用rank对本地GPU数取模
                     actual_device_id = rank % num_gpus
-                    print(
-                        f"[WARNING] local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_device_id} based on rank % num_gpus",
-                        flush=True,
+                    log_warning(
+                        "model_runner",
+                        f"local_rank {local_rank} exceeds available GPUs ({num_gpus}), using device {actual_device_id} based on rank % num_gpus",
+                        rank=rank,
                     )
                 else:
                     actual_device_id = local_rank
-                print(
-                    f"[DEBUG] Rank {rank}: Calculated actual_device_id={actual_device_id}",
-                    flush=True,
+                log_debug(
+                    "model_runner",
+                    f"Rank {rank}: Calculated actual_device_id={actual_device_id}",
+                    rank=rank,
                 )
 
                 # 在初始化分布式环境之前先设置CUDA设备
                 torch.cuda.set_device(actual_device_id)
-                print(
-                    f"[DEBUG] Rank {rank}: Set CUDA device to {actual_device_id} before init_process_group",
-                    flush=True,
+                log_debug(
+                    "model_runner",
+                    f"Rank {rank}: Set CUDA device to {actual_device_id} before init_process_group",
+                    rank=rank,
                 )
 
                 # 不传递device_id参数，让NCCL使用当前设置的CUDA设备
@@ -117,16 +134,18 @@ class ModelRunner:
                     world_size=self.world_size,
                     rank=rank,
                 )
-                print(
-                    f"[DEBUG] Rank {rank} (local_rank={local_rank}) Distributed environment initialized",
-                    flush=True,
+                log_debug(
+                    "model_runner",
+                    f"Rank {rank} (local_rank={local_rank}) Distributed environment initialized",
+                    rank=rank,
                 )
 
                 # CUDA设备已经在init_process_group之前设置了，保存实际使用的设备ID
                 self.actual_device_id = actual_device_id
-                print(
-                    f"[DEBUG] Rank {rank}: Using CUDA device {actual_device_id}",
-                    flush=True,
+                log_debug(
+                    "model_runner",
+                    f"Rank {rank}: Using CUDA device {actual_device_id}",
+                    rank=rank,
                 )
             else:
                 # 单GPU情况，直接设置设备
@@ -137,9 +156,10 @@ class ModelRunner:
                     actual_local_rank = local_rank
                 torch.cuda.set_device(actual_local_rank)
                 self.actual_device_id = actual_local_rank
-                print(
-                    f"[DEBUG] Rank {rank}: Single GPU mode, set CUDA device to {actual_local_rank}",
-                    flush=True,
+                log_debug(
+                    "model_runner",
+                    f"Rank {rank}: Single GPU mode, set CUDA device to {actual_local_rank}",
+                    rank=rank,
                 )
                 dist.init_process_group(
                     "nccl",
@@ -156,8 +176,23 @@ class ModelRunner:
         self.model = MODELS_MAPPING[hf_config.model_type](hf_config)
         load_model(self.model, config.model)
         self.sampler = Sampler()
-        self.warmup_model()
         self.allocate_kv_cache()
+
+        # Warmup 模型（已适配 chunked prefill）
+        if self.rank == 0:
+            log_info(
+                "model_runner",
+                "Warming up model...",
+                rank=self.rank,
+            )
+        self.warmup_model()
+        if self.rank == 0:
+            log_info(
+                "model_runner",
+                "Warmup completed",
+                rank=self.rank,
+            )
+
         if not self.enforce_eager:
             self.capture_cudagraph()
         torch.set_default_device("cpu")
@@ -176,7 +211,11 @@ class ModelRunner:
 
     def exit(self):
         """退出并清理资源"""
-        print(f"[DEBUG] {self.rank} ModelRunner exit started", flush=True)
+        log_debug(
+            "model_runner",
+            f"ModelRunner exit started",
+            rank=self.rank,
+        )
         try:
             if not self.enforce_eager:
                 if hasattr(self, "graphs"):
@@ -191,10 +230,18 @@ class ModelRunner:
             if dist.is_available() and dist.is_initialized():
                 dist.destroy_process_group()
         except Exception as e:
-            print(f"[DEBUG] synchronize Exception in exit try block: {e}", flush=True)
+            log_debug(
+                "model_runner",
+                f"synchronize Exception in exit try block: {e}",
+                rank=self.rank,
+            )
             pass
 
-        print(f"[DEBUG] Rank {self.rank} ModelRunner exit completed", flush=True)
+        log_debug(
+            "model_runner",
+            f"Rank {self.rank} ModelRunner exit completed",
+            rank=self.rank,
+        )
 
     def loop(self):
         # 在分布式环境中，非主rank等待主rank的指令
@@ -251,18 +298,77 @@ class ModelRunner:
             raise AttributeError(f"Method {method_name} not found")
 
     def warmup_model(self):
+        """模型预热，已适配 Chunked Prefill"""
+        from nanovllm.log_config import log_info, log_debug
+
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
-        max_num_batched_tokens, max_model_len = (
-            self.config.max_num_batched_tokens,
-            self.config.max_model_len,
+
+        config = self.config
+        max_num_batched_tokens = config.max_num_batched_tokens
+        max_model_len = config.max_model_len
+
+        # 根据是否启用 chunked prefill 决定预热策略
+        if config.enable_chunked_prefill:
+            # Chunked Prefill 模式：使用 chunked_prefill_size
+            warmup_len = min(config.chunked_prefill_size, max_model_len)
+            log_info(
+                "warmup",
+                f"Warmup with Chunked Prefill: chunk_size={warmup_len}",
+                rank=self.rank,
+            )
+        else:
+            # 传统模式：使用 max_num_batched_tokens
+            warmup_len = min(max_num_batched_tokens, max_model_len)
+            log_info(
+                "warmup",
+                f"Warmup without Chunked Prefill: warmup_len={warmup_len}",
+                rank=self.rank,
+            )
+
+        num_seqs = min(max_num_batched_tokens // warmup_len, config.max_num_seqs)
+        if num_seqs == 0:
+            num_seqs = 1
+
+        # 创建预热序列
+        seqs = [Sequence([0] * warmup_len) for _ in range(num_seqs)]
+
+        # 重要：为 warmup 序列分配 blocks，这样才能生成 slot_mapping
+        # 因为 KV cache 已经分配了，store_kvcache 需要 slot_mapping
+        from nanovllm.engine.block_manager import BlockManager
+
+        temp_block_manager = BlockManager(
+            config.num_kvcache_blocks, config.kvcache_block_size
         )
-        num_seqs = min(
-            max_num_batched_tokens // max_model_len, self.config.max_num_seqs
+
+        for seq in seqs:
+            seq.num_prefilled_tokens = 0
+            seq.current_chunk_size = warmup_len
+            # 分配 blocks 以便生成 slot_mapping
+            if temp_block_manager.can_allocate(seq):
+                temp_block_manager.allocate(seq)
+
+        log_debug(
+            "warmup",
+            f"Starting warmup: {num_seqs} seqs x {warmup_len} tokens",
+            rank=self.rank,
         )
-        seqs = [Sequence([0] * max_model_len) for _ in range(num_seqs)]
+
+        # 执行预热
         self.run(seqs, True)
+
+        # 清理 warmup 分配的 blocks
+        for seq in seqs:
+            if seq.block_table:
+                temp_block_manager.deallocate(seq)
+
         torch.cuda.empty_cache()
+
+        log_info(
+            "warmup",
+            f"Warmup completed: {num_seqs} seqs x {warmup_len} tokens",
+            rank=self.rank,
+        )
 
     def allocate_kv_cache(self):
         config = self.config
@@ -318,6 +424,8 @@ class ModelRunner:
         return block_tables
 
     def prepare_prefill(self, seqs: list[Sequence]):
+        from nanovllm.log_config import log_debug
+
         input_ids = []
         positions = []
         cu_seqlens_q = [0]
@@ -326,34 +434,84 @@ class ModelRunner:
         max_seqlen_k = 0
         slot_mapping = []
         block_tables = None
+
+        log_debug(
+            "chunked_prefill", f"Processing {len(seqs)} sequences", rank=self.rank
+        )
+
+        for seq_idx, seq in enumerate(seqs):
+            chunk_size = getattr(
+                seq,
+                "current_chunk_size",
+                seq.num_prompt_tokens - seq.num_prefilled_tokens,
+            )
+            start_pos = seq.num_prefilled_tokens
+            end_pos = start_pos + chunk_size
+
+            log_debug(
+                "chunked_prefill",
+                f"Seq {seq_idx}: start={start_pos}, end={end_pos}, chunk={chunk_size}, "
+                f"total={seq.num_prompt_tokens}, blocks={len(seq.block_table) if seq.block_table else 0}",
+                rank=self.rank,
+            )
+
+            input_ids.extend(
+                seq.token_ids[start_pos:end_pos]
+            )  # 真正执行prefill的input ids
+            positions.extend(list(range(start_pos, end_pos)))  # 位置
+
+            cu_seqlens_q.append(cu_seqlens_q[-1] + chunk_size)
+            cu_seqlens_k.append(cu_seqlens_k[-1] + end_pos)
+
+            max_seqlen_q = max(chunk_size, max_seqlen_q)
+            max_seqlen_k = max(end_pos, max_seqlen_k)
+
+            # slot_mapping 告诉 kernel「新 token → KV Cache 位置」
+            # 只为当前 chunk 中实际需要写入的 tokens 生成 slot_mapping
+            if seq.block_table:
+                # 注意：只处理当前 chunk 的 tokens [start_pos:end_pos]
+                for i in range(start_pos, end_pos):
+                    block_idx = i // self.block_size
+                    block_offset = i % self.block_size
+
+                    # 确保 block_idx 在有效范围内
+                    if block_idx >= len(seq.block_table):
+                        from nanovllm.log_config import log_error
+
+                        log_error(
+                            "chunked_prefill",
+                            f"Block index out of range: block_idx={block_idx} >= len(block_table)={len(seq.block_table)}, "
+                            f"token_pos={i}, block_size={self.block_size}, num_blocks={seq.num_blocks}",
+                            rank=self.rank,
+                        )
+                        raise IndexError(
+                            f"Block index {block_idx} out of range for block_table of length {len(seq.block_table)}"
+                        )
+
+                    slot_mapping.append(
+                        seq.block_table[block_idx] * self.block_size + block_offset
+                    )
+            else:
+                # 如果没有 block_table，slot_mapping 应该为空（首次 prefill 且没有 KV cache）
+                # Flash attention 会直接计算，不需要写入 KV cache
+                pass
+
+        log_debug(
+            "chunked_prefill",
+            f"Total input_ids={len(input_ids)}, slot_mapping={len(slot_mapping)}",
+            rank=self.rank,
+        )
+
+        # 决定是否需要使用 block_tables
+        # 1. 存在 prefix cache (num_cached_tokens > 0)
+        # 2. 是 Chunked Prefill 的非第一块 (start_pos > 0)
+        use_block_tables = False
         for seq in seqs:
-            seqlen = len(seq)  # prompt 长度
-            input_ids.extend(seq[seq.num_cached_tokens :])  # 真正执行prefill的input ids
-            positions.extend(list(range(seq.num_cached_tokens, seqlen)))  # 位置
-            seqlen_q = seqlen - seq.num_cached_tokens  # query 的长度
-            seqlen_k = seqlen  # k 是需要全部的
-            cu_seqlens_q.append(
-                cu_seqlens_q[-1] + seqlen_q
-            )  # 记录每一个seq 对应的query的长度（去掉缓存的，真正计算attn的长度），不过一直在累加, 目的是后面在compute_logts的时候，找到每一个requets最后的位置，用于塞新的token到该位置上
-            cu_seqlens_k.append(
-                cu_seqlens_k[-1] + seqlen_k
-            )  # 记录每一个seq的k的长度，不过一直在累加
-            max_seqlen_q = max(
-                seqlen_q, max_seqlen_q
-            )  # 记录这一批reqs 最大的query的长度
-            max_seqlen_k = max(seqlen_k, max_seqlen_k)  # 记录这一批reqs 最大的k的长度
-            if not seq.block_table:
-                continue
-            for i in range(seq.num_cached_blocks, seq.num_blocks):
-                start = seq.block_table[i] * self.block_size
-                if i != seq.num_blocks - 1:
-                    end = start + self.block_size
-                else:
-                    end = start + seq.last_block_num_tokens
-                slot_mapping.extend(
-                    list(range(start, end))
-                )  # slot_mapping 告诉 kernel「新 token → KV Cache 位置」
-        if cu_seqlens_k[-1] > cu_seqlens_q[-1]:  # prefix cache
+            if seq.num_prefilled_tokens > 0 or seq.num_cached_tokens > 0:
+                use_block_tables = True
+                break
+
+        if use_block_tables:
             block_tables = self.prepare_block_tables(seqs)  # (bs, max_seq_len)
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(
             non_blocking=True
@@ -462,7 +620,19 @@ class ModelRunner:
         self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool
     ):
         if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
-            return self.model.compute_logits(self.model(input_ids, positions))
+            hidden_states = self.model(input_ids, positions)
+
+            if is_prefill:
+                # prefill 阶段，只对每个序列的最后一个 token 计算 logits
+                context = get_context()
+                last_token_indices = (context.cu_seqlens_q[1:] - 1).long()
+                hidden_states = hidden_states[last_token_indices]
+
+                # 重要：标记我们已经提取了最后一个 token，告诉 lm_head 不要再次提取
+                context.is_prefill = False
+
+            logits = self.model.compute_logits(hidden_states)
+            return logits
         else:
             bs = input_ids.size(0)
             context = get_context()
@@ -491,18 +661,31 @@ class ModelRunner:
         if self.rank == 0:
             temperatures = self.prepare_sample(seqs)
 
-        # 将temperatures广播给所有rank, 感觉不用广播
-        # temperatures = broadcast_object(temperatures, src=0)
-
         logits = self.run_model(input_ids, positions, is_prefill)
 
         # 只在rank 0上进行采样
         token_ids = None
         if self.rank == 0:
-            token_ids = self.sampler(logits, temperatures).tolist()
-
-        # 将结果广播给所有rank，感觉不用广播，只有rank = 0的节点才会和客户端打交道
-        # token_ids = broadcast_object(token_ids, src=0)
+            full_token_ids = self.sampler(logits, temperatures).tolist()
+            if is_prefill:
+                # 判断是否启用 chunked prefill
+                if self.config.enable_chunked_prefill:
+                    # Chunked Prefill 模式：中间 chunk 返回 None
+                    token_ids = []
+                    for i, seq in enumerate(seqs):
+                        chunk_size = getattr(seq, "current_chunk_size", 0)
+                        if (
+                            seq.num_prefilled_tokens + chunk_size
+                            < seq.num_prompt_tokens
+                        ):
+                            token_ids.append(None)
+                        else:
+                            token_ids.append(full_token_ids[i])
+                else:
+                    # 传统模式：直接返回所有 tokens
+                    token_ids = full_token_ids
+            else:
+                token_ids = full_token_ids
 
         reset_context()
         return token_ids

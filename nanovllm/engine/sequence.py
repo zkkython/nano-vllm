@@ -26,6 +26,8 @@ class Sequence:
         self.num_prompt_tokens = len(token_ids)
         # 有多少token命中缓存
         self.num_cached_tokens = 0
+        # 已经完成prefill的token数量
+        self.num_prefilled_tokens = 0
         # 该prompt 对应的kv cache 的block索引
         self.block_table = []
         self.temperature = sampling_params.temperature
@@ -41,6 +43,10 @@ class Sequence:
     @property
     def is_finished(self):
         return self.status == SequenceStatus.FINISHED
+
+    @property
+    def is_prefill_finished(self):
+        return self.num_prefilled_tokens >= self.num_prompt_tokens
 
     @property
     def num_completion_tokens(self):
@@ -81,6 +87,7 @@ class Sequence:
             self.num_tokens,
             self.num_prompt_tokens,
             self.num_cached_tokens,
+            self.num_prefilled_tokens,
             self.block_table,
             self.token_ids if self.num_completion_tokens == 0 else self.last_token,
         )
@@ -90,6 +97,7 @@ class Sequence:
             self.num_tokens,
             self.num_prompt_tokens,
             self.num_cached_tokens,
+            self.num_prefilled_tokens,
             self.block_table,
         ) = state[:-1]
         if self.num_completion_tokens == 0:

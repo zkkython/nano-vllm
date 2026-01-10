@@ -101,6 +101,30 @@ class Qwen3Attention(nn.Module):
         k_by_head = self.k_norm(k_by_head)
         # k矩阵shape: (seq1_len+seq2_len+..+seq_bs_len, 128)
         k = k_by_head.view(k.shape)
+
+        ######################################
+        """
+        之所以这里先进行flatten成2D是因为，确保RMSNorm都是2维，
+        这样子RMSNorm torch.compile的图就可以复用
+        本身RMSNorm在多个地方被使用，不过其他地方是2D，只有这里是3D
+
+        """
+        # q_by_head = q.reshape(-1, self.num_heads, self.head_dim)
+        # q_shape = q_by_head.shape  # (seq_total, num_heads, head_dim)
+        # # 先 flatten 成 2D: (seq_total * num_heads, head_dim)
+        # q_flat = q_by_head.reshape(-1, self.head_dim)
+        # q_flat = self.q_norm(q_flat)  # 这里是 2D 调用
+        # q_by_head = q_flat.reshape(q_shape)  # reshape 回 3D
+        # q = q_by_head.view(q.shape)  # 保持后续逻辑不变
+
+        # k_by_head = k.reshape(-1, self.num_kv_heads, self.head_dim)
+        # k_shape = k_by_head.shape  # (seq_total, num_kv_heads, head_dim)
+        # k_flat = k_by_head.reshape(-1, self.head_dim)
+        # k_flat = self.k_norm(k_flat)  # 这里也是 2D 调用
+        # k_by_head = k_flat.reshape(k_shape)
+        # k = k_by_head.view(k.shape)
+        ######################################
+
         # q，k矩阵进行旋转位置编码，
         q, k = self.rotary_emb(positions, q, k)
         # q,k,v 送入attention计算，输出o shape: (seq1_len+seq2_len+..+seq_bs_len, 256)

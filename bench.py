@@ -2,6 +2,7 @@ import os
 import time
 from random import randint, seed
 from nanovllm import LLM, SamplingParams
+from nanovllm.log_config import LogConfig, LogLevel
 
 # from vllm import LLM, SamplingParams
 
@@ -13,7 +14,19 @@ def main():
     max_ouput_len = 1024
 
     path = os.path.expanduser("/root/.cache/modelscope/hub/models/Qwen/Qwen3-8B")
-    llm = LLM(path, enforce_eager=False, max_model_len=4096, tensor_parallel_size=8)
+    log_config = LogConfig(
+        global_level=LogLevel.ERROR,
+        chunked_prefill=LogLevel.INFO,  # 只调试 chunked prefill
+        warmup=LogLevel.INFO,  # warmup 显示基本信息
+        model_runner=LogLevel.INFO,
+    )
+    llm = LLM(
+        path,
+        log_config=log_config,
+        enforce_eager=False,
+        max_model_len=2050,
+        tensor_parallel_size=8,
+    )
 
     prompt_token_ids = [
         [randint(0, 10000) for _ in range(randint(100, max_input_len))]

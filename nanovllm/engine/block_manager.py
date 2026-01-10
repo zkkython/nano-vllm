@@ -50,7 +50,7 @@ class BlockManager:
         return self.blocks[block_id]
 
     # 释放block的时候，不会释放hash_to_block_id
-    def _deallocate_block(self, block_id: int) -> Block:
+    def _deallocate_block(self, block_id: int):
         assert self.blocks[block_id].ref_count == 0
         self.used_block_ids.remove(block_id)
         self.free_block_ids.append(block_id)

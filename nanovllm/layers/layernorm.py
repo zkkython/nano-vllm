@@ -27,6 +27,18 @@ class RMSNorm(nn.Module):
         return x
 
     @torch.compile
+    def rms_qk_forward(
+        self,
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        orig_dtype = x.dtype
+        x = x.to(torch.float32)
+        var = x.pow(2).mean(dim=-1, keepdim=True)
+        x.mul_(torch.rsqrt(var + self.eps))
+        x = x.to(orig_dtype).mul_(self.weight)
+        return x
+
+    @torch.compile
     def add_rms_forward(
         self,
         x: torch.Tensor,
@@ -46,6 +58,9 @@ class RMSNorm(nn.Module):
         residual: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
-            return self.rms_forward(x)
+            if len(x.shape) == 2:
+                return self.rms_forward(x)
+            else:
+                return self.rms_qk_forward(x)
         else:
             return self.add_rms_forward(x, residual)
