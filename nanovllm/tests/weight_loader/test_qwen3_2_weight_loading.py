@@ -8,7 +8,10 @@ from safetensors.torch import save_file
 from transformers import Qwen3Config
 
 from nanovllm.models.qwen3_2 import Qwen3ForCausalLM
+import logging
 
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 """
 PYTHONPATH=/root/mingtong/aiwork/nano-vllm pytest nanovllm/tests/weight_loader/test_qwen3_2_weight_loading.py
@@ -190,3 +193,30 @@ def test_qwen3_2_load_real_qwen3_weights():  # noqa: D103
     expected_down = down_src.T.to(down_param.dtype)
     assert down_param.shape == expected_down.shape
     assert torch.allclose(down_param, expected_down)
+
+
+@pytest.mark.skipif(
+    not os.path.isdir(
+        os.environ.get(
+            "QWEN3_MODEL_PATH", "/root/.cache/modelscope/hub/models/Qwen/Qwen3-8B"
+        )
+    ),
+    reason="Real Qwen3 model path not found; set QWEN3_MODEL_PATH to enable this test.",
+)
+def test_qwen3_2_load_real_qwen3_weights_with_layers():  # noqa: D103
+    _patch_dist_single_process()
+
+    model_path = os.environ.get(
+        "QWEN3_MODEL_PATH", "/root/.cache/modelscope/hub/models/Qwen/Qwen3-8B"
+    )
+
+    # 从真实模型目录读取配置
+    config = Qwen3Config.from_pretrained(model_path)
+    model = Qwen3ForCausalLM(config)
+
+    # 先加载权重
+    results = model.load_weights(
+        config=config, model_path=model_path, load_partial_layers=2
+    )
+    log.info(results)
+    assert results is not None

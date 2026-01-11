@@ -172,7 +172,11 @@ class ModelRunner:
 
         self.model = MODELS_MAPPING[hf_config.model_type](hf_config)
         # load_model(self.model, config.model)
-        self.model.load_weights(config=hf_config, model_path=config.model)
+        self.model.load_weights(
+            config=hf_config,
+            model_path=config.model,
+            load_partial_layers=config.load_partial_layers,
+        )
         self.sampler = Sampler()
         self.allocate_kv_cache()
 

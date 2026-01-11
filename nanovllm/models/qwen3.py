@@ -233,19 +233,30 @@ class Qwen3ForCausalLM(nn.Module):
         if config.tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
 
-    def load_weights(self, config, model_path: str):
+    def load_weights(
+        self, config, model_path: str, load_partial_layers: int | None = None
+    ):
         """使用 WeightLoader 加载权重.
 
         Args:
             config: 模型配置（Qwen3Config）
             model_path: safetensors 权重文件所在目录
+            load_partial_layers: 只加载前 N 层，None 表示加载所有层
+
+        Returns:
+            加载统计信息字典
         """
         from nanovllm.models.qwen3_weight_mapping import build_qwen3_weight_mappings
         from nanovllm.utils.weight_loader import WeightLoader
 
         weight_mappings = build_qwen3_weight_mappings(config.num_hidden_layers)
-        loader = WeightLoader(model=self, config=config, model_path=model_path)
-        loader.load_weights_from_safetensors(weight_mappings)
+        loader = WeightLoader(
+            model=self,
+            config=config,
+            model_path=model_path,
+            load_partial_layers=load_partial_layers,
+        )
+        return loader.load_weights_from_safetensors(weight_mappings)
 
     def forward(
         self,

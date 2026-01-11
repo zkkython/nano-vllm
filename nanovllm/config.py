@@ -24,6 +24,9 @@ class Config:
         None  # Chunk 大小，None 表示使用 max_num_batched_tokens
     )
 
+    # 权重加载配置
+    load_partial_layers: int | None = None  # 只加载前 N 层，None 表示加载所有层
+
     # 日志配置
     log_config: Optional[LogConfig] = None
 

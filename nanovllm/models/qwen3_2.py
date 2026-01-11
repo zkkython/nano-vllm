@@ -243,10 +243,19 @@ class Qwen3ForCausalLM(nn.Module):
         if config.tie_word_embeddings:
             self.lm_head.weight.data = self.transformers.embed_tokens.weight.data
 
-    def load_weights(self, config, model_path):
+    def load_weights(self, config, model_path, load_partial_layers: int | None = None):
         weight_mappings = self._build_weight_mappings()
-        loader = WeightLoader(config=config, model_path=model_path, model=self)
-        loader.load_weights_from_safetensors(weight_mappings)
+        loader = WeightLoader(
+            config=config,
+            model_path=model_path,
+            model=self,
+            load_partial_layers=(
+                getattr(config, "load_partial_layers", None)
+                if load_partial_layers is None
+                else load_partial_layers
+            ),
+        )
+        return loader.load_weights_from_safetensors(weight_mappings)
 
     def _build_weight_mappings(self):
         """
