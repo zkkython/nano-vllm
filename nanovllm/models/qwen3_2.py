@@ -3,16 +3,16 @@ from torch import nn
 import torch.distributed as dist
 from transformers import Qwen3Config
 
-from nanovllm.layers.activation import SiluAndMul
+from nanovllm.layers.activation import SiluAndMulSplit
 from nanovllm.layers.attention import Attention
 from nanovllm.layers.layernorm import RMSNorm
 from nanovllm.layers.linear import (
-    QKVParallelLinear,
-    MergedColumnParallelLinear,
+    ColumnParallelLinear,
     RowParallelLinear,
 )
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+from nanovllm.utils.weight_loader import WeightLoader, WeightMapping
 
 
 class Qwen3Attention(nn.Module):
@@ -46,17 +46,29 @@ class Qwen3Attention(nn.Module):
         self.kv_size = self.num_kv_heads * self.head_dim  # 1 * 128 = 128
         self.scaling = self.head_dim**-0.5
 
-        self.qkv_proj = QKVParallelLinear(
-            hidden_size,  # 1024
-            self.head_dim,  # 128
-            self.total_num_heads,  # 16
-            self.total_num_kv_heads,  # 8
-            bias=qkv_bias,  # False
+        self.q_proj = ColumnParallelLinear(
+            input_size=hidden_size,
+            output_size=self.total_num_heads * self.head_dim,
+            bias=False,
+            transpose=True,
+        )
+        self.k_proj = ColumnParallelLinear(
+            input_size=hidden_size,
+            output_size=self.total_num_kv_heads * self.head_dim,
+            bias=False,
+            transpose=True,
+        )
+        self.v_proj = ColumnParallelLinear(
+            input_size=hidden_size,
+            output_size=self.total_num_kv_heads * self.head_dim,
+            bias=False,
+            transpose=True,
         )
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,  # 16 * 128 = 2048
             hidden_size,  # 1024
             bias=False,
+            transpose=True,
         )
         self.rotary_emb = get_rope(
             self.head_dim,
@@ -80,13 +92,10 @@ class Qwen3Attention(nn.Module):
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         # hidden_states shape: (seq1_len+seq2_len+..+seq_bs_len, hidden_size=1024)
-        # 单rank上的qkv:  (seq1_len+seq2_len+..+seq_bs_len, hidden_size=1024) * (hidden_size, 512) = (seq1_len+seq2_len+..+seq_bs_len, 512)
-        qkv = self.qkv_proj(hidden_states)
-        # 切分拆解出q,k,v的矩阵，
-        # 每个rank上面的q矩阵shape: (seq1_len+seq2_len+..+seq_bs_len, 256),
-        # k矩阵shape: (seq1_len+seq2_len+..+seq_bs_len, 128),
-        # v矩阵shape: (seq1_len+seq2_len+..+seq_bs_len, 128)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+
+        q = self.q_proj(hidden_states)
+        k = self.k_proj(hidden_states)
+        v = self.v_proj(hidden_states)
         # q_by_head shape: (seq1_len+seq2_len+..+seq_bs_len, 2, 128)
         q_by_head = q.view(
             -1, self.num_heads, self.head_dim
@@ -123,22 +132,30 @@ class Qwen3MLP(nn.Module):
         hidden_act: str,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
-            hidden_size,
-            [intermediate_size] * 2,
-            bias=False,
+        # self.gate_up_proj = MergedColumnParallelLinear(
+        #     hidden_size,
+        #     [intermediate_size] * 2,
+        #     bias=False,
+        # )
+        self.gate_proj = ColumnParallelLinear(
+            hidden_size, intermediate_size, bias=False, transpose=True
+        )
+        self.up_proj = ColumnParallelLinear(
+            hidden_size, intermediate_size, bias=False, transpose=True
         )
         self.down_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
             bias=False,
+            transpose=True,
         )
         assert hidden_act == "silu"
-        self.act_fn = SiluAndMul()
+        self.act_fn = SiluAndMulSplit()
 
     def forward(self, x):
-        gate_up = self.gate_up_proj(x)
-        x = self.act_fn(gate_up)
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        x = self.act_fn(gate, up)
         x = self.down_proj(x)
         return x
 
@@ -217,42 +234,116 @@ class Qwen3Model(nn.Module):
 
 
 class Qwen3ForCausalLM(nn.Module):
-    packed_modules_mapping = {
-        "q_proj": ("qkv_proj", "q"),
-        "k_proj": ("qkv_proj", "k"),
-        "v_proj": ("qkv_proj", "v"),
-        "gate_proj": ("gate_up_proj", 0),
-        "up_proj": ("gate_up_proj", 1),
-    }
 
     def __init__(self, config: Qwen3Config) -> None:
         super().__init__()
         self.config = config
-        self.model = Qwen3Model(config)
+        self.transformers = Qwen3Model(config)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
         if config.tie_word_embeddings:
-            self.lm_head.weight.data = self.model.embed_tokens.weight.data
+            self.lm_head.weight.data = self.transformers.embed_tokens.weight.data
 
-    def load_weights(self, config, model_path: str):
-        """使用 WeightLoader 加载权重.
-
-        Args:
-            config: 模型配置（Qwen3Config）
-            model_path: safetensors 权重文件所在目录
-        """
-        from nanovllm.models.qwen3_weight_mapping import build_qwen3_weight_mappings
-        from nanovllm.utils.weight_loader import WeightLoader
-
-        weight_mappings = build_qwen3_weight_mappings(config.num_hidden_layers)
-        loader = WeightLoader(model=self, config=config, model_path=model_path)
+    def load_weights(self, config, model_path):
+        weight_mappings = self._build_weight_mappings()
+        loader = WeightLoader(config=config, model_path=model_path, model=self)
         loader.load_weights_from_safetensors(weight_mappings)
+
+    def _build_weight_mappings(self):
+        """
+        Build wight mapping for Qwen3
+        Embedding/LM Head 使用vocab_parallel, 使用行并行
+
+        Decode layers: 使用row/col 并行
+        - Q/K/V/Gate/Up 使用列并行
+        - O/Down 使用行并行
+
+        """
+
+        weight_mappings: dict[str, WeightMapping] = {
+            # model.embed_tokens.weight：shape = torch.Size([151936, 4096])
+            "model.embed_tokens.weight": WeightMapping(
+                target_path="transformers.embed_tokens.weight"
+            ),
+            # lm_head.weight：shape = torch.Size([151936, 4096])
+            "lm_head.weight": WeightMapping(target_path="lm_head.weight"),
+            # model.norm.weight：shape = torch.Size([4096])
+            "model.norm.weight": WeightMapping(target_path="transformers.norm.weight"),
+        }
+
+        # decode layers mappings
+        layer_nums = getattr(self.config, "num_hidden_layers", 0)
+        assert layer_nums > 0
+        for layer_id in range(layer_nums):
+            """
+            model.layers.18.input_layernorm.weight：shape = torch.Size([4096])
+            model.layers.18.mlp.down_proj.weight：shape = torch.Size([4096, 12288])
+            model.layers.18.mlp.gate_proj.weight：shape = torch.Size([12288, 4096])
+            model.layers.18.mlp.up_proj.weight：shape = torch.Size([12288, 4096])
+            model.layers.18.post_attention_layernorm.weight：shape = torch.Size([4096])
+            model.layers.18.self_attn.k_norm.weight：shape = torch.Size([128])
+            model.layers.18.self_attn.k_proj.weight：shape = torch.Size([1024, 4096])
+            model.layers.18.self_attn.o_proj.weight：shape = torch.Size([4096, 4096])
+            model.layers.18.self_attn.q_norm.weight：shape = torch.Size([128])
+            model.layers.18.self_attn.q_proj.weight：shape = torch.Size([4096, 4096])
+            model.layers.18.self_attn.v_proj.weight：shape = torch.Size([1024, 4096])
+            """
+            hf_prefix = f"model.layers.{layer_id}"
+            current_prefix = f"transformers.layers.{layer_id}"
+            # LayerNorms, input_layernorm, post_attention_layernorm
+            weight_mappings[f"{hf_prefix}.input_layernorm.weight"] = WeightMapping(
+                target_path=f"{current_prefix}.input_layernorm.weight"
+            )
+            weight_mappings[f"{hf_prefix}.post_attention_layernorm.weight"] = (
+                WeightMapping(
+                    target_path=f"{current_prefix}.post_attention_layernorm.weight"
+                )
+            )
+
+            # attention projection
+            for proj in ["q_proj", "k_proj", "v_proj"]:
+                weight_mappings[f"{hf_prefix}.self_attn.{proj}.weight"] = WeightMapping(
+                    target_path=f"{current_prefix}.self_attn.{proj}.weight",
+                    transpose=True,
+                    dist_strategy="col",
+                )
+
+            for qknorm in ["q_norm", "k_norm"]:
+                weight_mappings[f"{hf_prefix}.self_attn.{qknorm}.weight"] = (
+                    WeightMapping(
+                        target_path=f"{current_prefix}.self_attn.{qknorm}.weight",
+                    )
+                )
+
+            # output projection
+            weight_mappings[f"{hf_prefix}.self_attn.o_proj.weight"] = WeightMapping(
+                target_path=f"{current_prefix}.self_attn.o_proj.weight",
+                transpose=True,
+                dist_strategy="row",
+            )
+
+            # MLP, gate, up 是列并行， down 是行并行
+            for proj in ["gate_proj", "up_proj"]:
+                hf_key = f"{hf_prefix}.mlp.{proj}.weight"
+                target = f"{current_prefix}.mlp.{proj}.weight"
+                weight_mappings[hf_key] = WeightMapping(
+                    target_path=target,
+                    transpose=True,
+                    dist_strategy="col",
+                )
+            weight_mappings[f"{hf_prefix}.mlp.down_proj.weight"] = WeightMapping(
+                target_path=f"{current_prefix}.mlp.down_proj.weight",
+                transpose=True,
+                dist_strategy="row",
+            )
+
+        return weight_mappings
 
     def forward(
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
-        hidden_states = self.model(input_ids, positions)
+        hidden_states = self.transformers(input_ids, positions)
         return hidden_states
 
     def compute_logits(

@@ -16,3 +16,5 @@ print(d)
 
 
 print([-1] * 5)
+
+print('/root/model/deepseek'.split('/')[-1])

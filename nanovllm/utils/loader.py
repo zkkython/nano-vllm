@@ -21,7 +21,8 @@ def load_origin_model(path: str):
 
 def load_model(model: nn.Module, path: str):
     packed_modules_mapping = getattr(model, "packed_modules_mapping", {})
-    with open("model_structure_write.txt", "w") as model_f:
+    model_struc_path = path.split("/")[-1]
+    with open(model_struc_path + "_model_structure_write.txt", "w") as model_f:
         for file in glob(os.path.join(path, "*.safetensors")):
             with safe_open(file, "pt", "cpu") as f:
 

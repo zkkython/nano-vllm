@@ -1,3 +1,4 @@
+from asyncio import transports
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -59,20 +60,32 @@ class ColumnParallelLinear(LinearBase):
         input_size: int,
         output_size: int,
         bias: bool = False,
+        transpose: bool = False,
     ):
-        super().__init__(input_size, output_size, 0)
+        # 如果模型权重加载的时候没有转置，那么就是使用原来的
+        # 如果转置了，那么直接在列维度切分就行，也就是tp_dim=1
+        if not transpose:
+            super().__init__(input_size, output_size, 0)
+        else:
+            super().__init__(input_size, output_size, 1)
         self.input_size_per_partition = input_size
         self.output_size_per_partition = divide(output_size, self.tp_size)
-
-        self.weight = nn.Parameter(
-            torch.empty(self.output_size_per_partition, self.input_size)
-        )
+        if not transpose:
+            self.weight = nn.Parameter(
+                torch.empty(self.output_size_per_partition, self.input_size)
+            )
+        else:
+            self.weight = nn.Parameter(
+                torch.empty(self.input_size, self.output_size_per_partition)
+            )
         self.weight.weight_loader = self.weight_loader
         if bias:
             self.bias = nn.Parameter(torch.empty(self.output_size_per_partition))
             self.bias.weight_loader = self.weight_loader
         else:
             self.register_parameter("bias", None)
+
+        self.transpose = transpose
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
         param_data = param.data
@@ -82,7 +95,18 @@ class ColumnParallelLinear(LinearBase):
         param_data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.linear(x, self.weight, self.bias)
+        # print(
+        #     f"ColumnParallelLinear forward, x.shape: {x.shape}, weight shape {self.weight.shape}"
+        # )
+        if not self.transpose:
+
+            return F.linear(x, self.weight, self.bias)
+        else:
+            return (
+                x @ self.weight + self.bias
+                if self.bias is not None
+                else x @ self.weight
+            )
 
 
 class MergedColumnParallelLinear(ColumnParallelLinear):
@@ -170,20 +194,30 @@ class RowParallelLinear(LinearBase):
         input_size: int,
         output_size: int,
         bias: bool = False,
+        transpose: bool = False,
     ):
-        super().__init__(input_size, output_size, 1)
+        if not transpose:
+            super().__init__(input_size, output_size, 1)
+        else:
+            super().__init__(input_size, output_size, 0)
         self.input_size_per_partition = divide(input_size, self.tp_size)
         self.output_size_per_partition = output_size
-
-        self.weight = nn.Parameter(
-            torch.empty(self.output_size, self.input_size_per_partition)
-        )
+        if not transpose:
+            self.weight = nn.Parameter(
+                torch.empty(self.output_size, self.input_size_per_partition)
+            )
+        else:
+            self.weight = nn.Parameter(
+                torch.empty(self.input_size_per_partition, self.output_size)
+            )
         self.weight.weight_loader = self.weight_loader
         if bias:
             self.bias = nn.Parameter(torch.empty(self.output_size))
             self.bias.weight_loader = self.weight_loader
         else:
             self.register_parameter("bias", None)
+
+        self.transpose = transpose
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
         param_data = param.data
@@ -193,7 +227,22 @@ class RowParallelLinear(LinearBase):
         param_data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = F.linear(x, self.weight, self.bias if self.tp_rank == 0 else None)
+        if not self.transpose:
+            y = F.linear(x, self.weight, self.bias if self.tp_rank == 0 else None)
+        else:
+            # if self.tp_rank == 0:
+            #     y = (
+            #         x @ self.weight + self.bias
+            #         if self.bias is not None
+            #         else x @ self.weight
+            #     )
+            effective_bias = (
+                self.bias
+                if self.tp_rank == 0 and self.bias is not None
+                else torch.zeros(self.output_size, device=x.device, dtype=x.dtype)
+            )
+            y = torch.addmm(effective_bias, x, self.weight)
+
         if self.tp_size > 1:
             dist.all_reduce(y)
         return y

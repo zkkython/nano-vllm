@@ -7,14 +7,11 @@ from nanovllm.engine.sequence import Sequence
 
 from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
-from nanovllm.utils.loader import load_model
 from nanovllm.models.models_mapping import MODELS_MAPPING
 from nanovllm.log_config import (
     log_debug,
     log_info,
     log_warning,
-    get_log_config,
-    should_log,
 )
 
 
@@ -174,7 +171,8 @@ class ModelRunner:
         torch.set_default_device("cuda")
 
         self.model = MODELS_MAPPING[hf_config.model_type](hf_config)
-        load_model(self.model, config.model)
+        # load_model(self.model, config.model)
+        self.model.load_weights(config=hf_config, model_path=config.model)
         self.sampler = Sampler()
         self.allocate_kv_cache()
 

@@ -1,4 +1,6 @@
 from nanovllm.models.qwen3 import Qwen3ForCausalLM
+
+# from nanovllm.models.qwen3_2 import Qwen3ForCausalLM as Qwen3_2ForCausalLM
 from nanovllm.models.qwen2 import Qwen2ForCausalLM
 from nanovllm.models.llama import LLamaForCausalLM
 from nanovllm.models.deepseek_v3 import DeepSeekV3ForCausalLM

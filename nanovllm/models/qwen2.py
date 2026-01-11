@@ -216,10 +216,25 @@ class Qwen2ForCausalLM(nn.Module):
 
     def __init__(self, config: Qwen2Config) -> None:
         super().__init__()
+        self.config = config
         self.model = Qwen2Model(config)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
         if config.tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
+
+    def load_weights(self, config, model_path: str):
+        """使用 WeightLoader 加载权重.
+
+        Args:
+            config: 模型配置（Qwen2Config）
+            model_path: safetensors 权重文件所在目录
+        """
+        from nanovllm.models.qwen2_weight_mapping import build_qwen2_weight_mappings
+        from nanovllm.utils.weight_loader import WeightLoader
+
+        weight_mappings = build_qwen2_weight_mappings(config.num_hidden_layers)
+        loader = WeightLoader(model=self, config=config, model_path=model_path)
+        loader.load_weights_from_safetensors(weight_mappings)
 
     def forward(
         self,
