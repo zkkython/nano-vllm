@@ -282,7 +282,7 @@ class DeepSeekV3MLA(nn.Module):
     Adapted to nano-vllm's architecture using flash-attention and kv-cache management.
     """
 
-    def __init__(self, config: DeepSeekV3Config):
+    def __init__(self, config: PretrainedConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
@@ -340,7 +340,7 @@ class DeepSeekV3MLA(nn.Module):
             rotary_dim=self.qk_rope_head_dim,
             max_position=config.max_position_embeddings,
             base=config.rope_theta,
-            rope_scaling=config.rope_scaling,
+            rope_scaling=None,
         )
 
         # Use simplified attention without custom kv-cache (nano-vllm handles this)
@@ -419,7 +419,7 @@ class DeepSeekV3MLA(nn.Module):
 class DeepSeekV3MLP(nn.Module):
     """Standard MLP for dense layers."""
 
-    def __init__(self, config: DeepSeekV3Config):
+    def __init__(self, config: PretrainedConfig):
         super().__init__()
         self.gate_proj = ColumnParallelLinear(
             config.hidden_size, config.intermediate_size, bias=False
@@ -440,7 +440,7 @@ class DeepSeekV3MLP(nn.Module):
 class DeepSeekV3Gate(nn.Module):
     """Gating network for MoE routing."""
 
-    def __init__(self, config: DeepSeekV3Config):
+    def __init__(self, config: PretrainedConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.topk = config.num_experts_per_tok
@@ -491,7 +491,7 @@ class DeepSeekV3Gate(nn.Module):
 class DeepSeekV3Expert(nn.Module):
     """Single expert MLP."""
 
-    def __init__(self, config: DeepSeekV3Config):
+    def __init__(self, config: PretrainedConfig):
         super().__init__()
         self.gate_proj = ReplicatedLinear(
             config.hidden_size, config.moe_intermediate_size, bias=False
@@ -512,7 +512,7 @@ class DeepSeekV3Expert(nn.Module):
 class DeepSeekV3MoE(nn.Module):
     """Mixture of Experts layer with shared experts."""
 
-    def __init__(self, config: DeepSeekV3Config):
+    def __init__(self, config: PretrainedConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
         tp_size = dist.get_world_size()
@@ -584,7 +584,7 @@ class DeepSeekV3MoE(nn.Module):
 class DeepSeekV3DecoderLayer(nn.Module):
     """DeepSeek-V3 decoder layer with MLA attention and MoE/MLP."""
 
-    def __init__(self, layer_id: int, config: DeepSeekV3Config):
+    def __init__(self, layer_id: int, config: PretrainedConfig):
         super().__init__()
         self.self_attn = DeepSeekV3MLA(config)
 
@@ -626,7 +626,7 @@ class DeepSeekV3DecoderLayer(nn.Module):
 class DeepSeekV3Model(nn.Module):
     """DeepSeek-V3 model without language modeling head."""
 
-    def __init__(self, config: DeepSeekV3Config):
+    def __init__(self, config: PretrainedConfig):
         super().__init__()
         self.config = config
         self.padding_idx = (
@@ -669,7 +669,7 @@ class DeepSeekV3ForCausalLM(nn.Module):
         "up_proj": ("gate_up_proj", 1),
     }
 
-    def __init__(self, config: DeepSeekV3Config):
+    def __init__(self, config: PretrainedConfig):
         super().__init__()
         global world_size, rank
         world_size = dist.get_world_size() if dist.is_initialized() else 1
@@ -697,3 +697,45 @@ class DeepSeekV3ForCausalLM(nn.Module):
     ) -> torch.Tensor:
         logits = self.lm_head(hidden_states)
         return logits
+
+    def load_weights(
+        self, config, model_path: str, load_partial_layers: int | None = None
+    ):
+        """使用 WeightLoader 加载权重.
+
+        Args:
+            config: 模型配置（PretrainedConfig）
+            model_path: safetensors 权重文件所在目录
+            load_partial_layers: 只加载前 N 层，None 表示加载所有层
+
+        Returns:
+            加载统计信息字典
+        """
+        from nanovllm.models.deepseek_v3_weight_mapping import (
+            build_deepseek_v3_weight_mappings,
+            build_deepseek_v3_expert_mappings,
+        )
+        from nanovllm.utils.weight_loader import WeightLoader
+
+        # 构建基本权重映射
+        weight_mappings = build_deepseek_v3_weight_mappings(
+            num_hidden_layers=config.num_hidden_layers,
+            q_lora_rank=config.q_lora_rank,
+            n_shared_experts=config.n_shared_experts,
+        )
+
+        # 添加专家权重映射
+        expert_mappings = build_deepseek_v3_expert_mappings(
+            num_hidden_layers=config.num_hidden_layers,
+            n_routed_experts=config.n_routed_experts,
+        )
+        weight_mappings.update(expert_mappings)
+
+        # 加载权重
+        loader = WeightLoader(
+            model=self,
+            config=config,
+            model_path=model_path,
+            load_partial_layers=load_partial_layers,
+        )
+        return loader.load_weights_from_safetensors(weight_mappings)
