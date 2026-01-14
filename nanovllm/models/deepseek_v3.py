@@ -330,8 +330,8 @@ class DeepSeekV3MLA(nn.Module):
         )
 
         self.scaling = self.qk_head_dim**-0.5
-        if config.max_position_embeddings > config.original_max_position_embeddings:
-            mscale = 0.1 * config.mscale * math.log(config.rope_factor) + 1.0
+        if config.max_position_embeddings > getattr(config, "original_max_position_embeddings", 4096):
+            mscale = 0.1 * getattr(config, "mscale", 1.0) * math.log(getattr(config, "rope_factor", 40)) + 1.0
             self.scaling = self.scaling * mscale * mscale
 
         # Rotary embedding
@@ -591,7 +591,7 @@ class DeepSeekV3DecoderLayer(nn.Module):
         # Use MLP for first layer, MoE for remaining layers
         # Note: Original code uses n_dense_layers, but config uses num_hidden_layers
         # Assuming first layer is dense
-        if layer_id == 0:
+        if layer_id >= 0 and layer_id <= 2:
             self.mlp = DeepSeekV3MLP(config)
         else:
             self.mlp = DeepSeekV3MoE(config)
@@ -676,6 +676,7 @@ class DeepSeekV3ForCausalLM(nn.Module):
         rank = dist.get_rank() if dist.is_initialized() else 0
 
         self.config = config
+        print(f"LM Inference config = {config}")
         self.model = DeepSeekV3Model(config)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
 

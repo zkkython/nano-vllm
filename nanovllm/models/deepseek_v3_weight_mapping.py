@@ -62,39 +62,65 @@ def build_deepseek_v3_weight_mappings(
         # Q 投影: 根据 q_lora_rank 决定是否使用 LoRA
         if q_lora_rank == 0:
             # 直接投影
+            # TODO Need to check when the feature is turning on
             weight_mappings[f"{prefix}.self_attn.wq.weight"] = WeightMapping(
                 target_path=f"{prefix}.self_attn.wq.weight"
             )
         else:
             # LoRA 投影
-            weight_mappings[f"{prefix}.self_attn.wq_a.weight"] = WeightMapping(
+            weight_mappings[f"{prefix}.self_attn.q_a_proj.weight"] = WeightMapping(
                 target_path=f"{prefix}.self_attn.wq_a.weight"
             )
-            weight_mappings[f"{prefix}.self_attn.q_norm.weight"] = WeightMapping(
+            weight_mappings[f"{prefix}.self_attn.q_a_layernorm.weight"] = WeightMapping(
                 target_path=f"{prefix}.self_attn.q_norm.weight"
             )
-            weight_mappings[f"{prefix}.self_attn.wq_b.weight"] = WeightMapping(
+            weight_mappings[f"{prefix}.self_attn.q_b_proj.weight"] = WeightMapping(
                 target_path=f"{prefix}.self_attn.wq_b.weight"
             )
 
         # KV 投影: 使用 LoRA
-        weight_mappings[f"{prefix}.self_attn.wkv_a.weight"] = WeightMapping(
+        weight_mappings[f"{prefix}.self_attn.kv_a_proj_with_mqa.weight"] = WeightMapping(
             target_path=f"{prefix}.self_attn.wkv_a.weight"
         )
-        weight_mappings[f"{prefix}.self_attn.kv_norm.weight"] = WeightMapping(
+        weight_mappings[f"{prefix}.self_attn.kv_a_layernorm.weight"] = WeightMapping(
             target_path=f"{prefix}.self_attn.kv_norm.weight"
         )
-        weight_mappings[f"{prefix}.self_attn.wkv_b.weight"] = WeightMapping(
+        weight_mappings[f"{prefix}.self_attn.kv_b_proj.weight"] = WeightMapping(
             target_path=f"{prefix}.self_attn.wkv_b.weight"
         )
+        
 
         # Output projection
-        weight_mappings[f"{prefix}.self_attn.wo.weight"] = WeightMapping(
+        weight_mappings[f"{prefix}.self_attn.o_proj.weight"] = WeightMapping(
             target_path=f"{prefix}.self_attn.wo.weight"
         )
 
         # ===== MLP / MoE =====
-        if layer_id == 0:
+        """
+        前三层
+        model.layers.0.input_layernorm.weight：shape = torch.Size([7168])
+        model.layers.0.mlp.down_proj.weight：shape = torch.Size([7168, 18432])
+        model.layers.0.mlp.down_proj.weight_scale_inv：shape = torch.Size([56, 144])
+        model.layers.0.mlp.gate_proj.weight：shape = torch.Size([18432, 7168])
+        model.layers.0.mlp.gate_proj.weight_scale_inv：shape = torch.Size([144, 56])
+        model.layers.0.mlp.up_proj.weight：shape = torch.Size([18432, 7168])
+        model.layers.0.mlp.up_proj.weight_scale_inv：shape = torch.Size([144, 56])
+        model.layers.0.post_attention_layernorm.weight：shape = torch.Size([7168])
+        model.layers.0.self_attn.kv_a_layernorm.weight：shape = torch.Size([512])
+        model.layers.0.self_attn.kv_a_proj_with_mqa.weight：shape = torch.Size([576, 7168])
+        model.layers.0.self_attn.kv_a_proj_with_mqa.weight_scale_inv：shape = torch.Size([5, 56])
+        model.layers.0.self_attn.kv_b_proj.weight：shape = torch.Size([32768, 512])
+        model.layers.0.self_attn.kv_b_proj.weight_scale_inv：shape = torch.Size([256, 4])
+        model.layers.0.self_attn.o_proj.weight：shape = torch.Size([7168, 16384])
+        model.layers.0.self_attn.o_proj.weight_scale_inv：shape = torch.Size([56, 128])
+        model.layers.0.self_attn.q_a_layernorm.weight：shape = torch.Size([1536])
+        model.layers.0.self_attn.q_a_proj.weight：shape = torch.Size([1536, 7168])
+        model.layers.0.self_attn.q_a_proj.weight_scale_inv：shape = torch.Size([12, 56])
+        model.layers.0.self_attn.q_b_proj.weight：shape = torch.Size([24576, 1536])
+        model.layers.0.self_attn.q_b_proj.weight_scale_inv：shape = torch.Size([192, 12])
+
+        """
+        if layer_id >= 0 and layer_id < 3:
             # 第一层使用标准 MLP
             weight_mappings[f"{prefix}.mlp.gate_proj.weight"] = WeightMapping(
                 target_path=f"{prefix}.mlp.gate_proj.weight"

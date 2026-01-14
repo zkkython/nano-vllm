@@ -10,19 +10,25 @@ def default_weight_loader(param: nn.Parameter, loaded_weight: torch.Tensor):
 
 
 def load_origin_model(path: str):
-    with open("model_structure_write.txt", "w") as model_f:
+    model_struc_path = path.split("/")[-1]
+    with open(
+        "models/" + model_struc_path + "_model_structure_write.txt", "w"
+    ) as model_f:
         for file in glob(os.path.join(path, "*.safetensors")):
             with safe_open(file, "pt", "cpu") as f:
                 for weight_name in f.keys():
                     model_f.write(
                         f"{weight_name}：shape = {f.get_tensor(weight_name).shape}\n"
+                        # f"{weight_name}\n"
                     )
 
 
 def load_model(model: nn.Module, path: str):
     packed_modules_mapping = getattr(model, "packed_modules_mapping", {})
     model_struc_path = path.split("/")[-1]
-    with open(model_struc_path + "_model_structure_write.txt", "w") as model_f:
+    with open(
+        "models/" + model_struc_path + "_model_structure_write.txt", "w"
+    ) as model_f:
         for file in glob(os.path.join(path, "*.safetensors")):
             with safe_open(file, "pt", "cpu") as f:
 
