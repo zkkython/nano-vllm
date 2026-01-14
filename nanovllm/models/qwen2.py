@@ -188,7 +188,13 @@ class Qwen2Model(nn.Module):
             config.vocab_size, config.hidden_size
         )
         self.layers = nn.ModuleList(
-            [Qwen2DecoderLayer(config) for _ in range(config.num_hidden_layers)]
+            [
+                Qwen2DecoderLayer(config)
+                for _ in range(
+                    getattr(config, "load_partial_layers", None)
+                    or config.num_hidden_layers
+                )
+            ]
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 

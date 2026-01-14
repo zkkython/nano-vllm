@@ -330,8 +330,15 @@ class DeepSeekV3MLA(nn.Module):
         )
 
         self.scaling = self.qk_head_dim**-0.5
-        if config.max_position_embeddings > getattr(config, "original_max_position_embeddings", 4096):
-            mscale = 0.1 * getattr(config, "mscale", 1.0) * math.log(getattr(config, "rope_factor", 40)) + 1.0
+        if config.max_position_embeddings > getattr(
+            config, "original_max_position_embeddings", 4096
+        ):
+            mscale = (
+                0.1
+                * getattr(config, "mscale", 1.0)
+                * math.log(getattr(config, "rope_factor", 40))
+                + 1.0
+            )
             self.scaling = self.scaling * mscale * mscale
 
         # Rotary embedding
@@ -353,6 +360,7 @@ class DeepSeekV3MLA(nn.Module):
             self.qk_head_dim,  # Use full qk_head_dim
             self.scaling,
             self.num_local_heads,  # Assume same num_kv_heads for now
+            v_head_dim=self.v_head_dim,
         )
 
     def forward(
@@ -367,7 +375,7 @@ class DeepSeekV3MLA(nn.Module):
             q = self.wq_b(self.q_norm(self.wq_a(hidden_states)))
 
         # Reshape q: (total_tokens, num_local_heads * qk_head_dim) -> (total_tokens, num_local_heads, qk_head_dim)
-        q = q.view(-1, self.num_local_heads, self.qk_head_dim)
+        q = q.reshape(-1, self.num_local_heads, self.qk_head_dim)
 
         # Split q into nope and rope parts
         q_nope, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
@@ -381,16 +389,16 @@ class DeepSeekV3MLA(nn.Module):
         k_pe = k_pe.unsqueeze(1).expand(-1, self.num_local_heads, -1).contiguous()
         q_pe, k_pe = self.rotary_emb(
             positions,
-            q_pe.view(-1, self.qk_rope_head_dim),
-            k_pe.view(-1, self.qk_rope_head_dim),
+            q_pe.reshape(-1, self.qk_rope_head_dim),
+            k_pe.reshape(-1, self.qk_rope_head_dim),
         )
-        q_pe = q_pe.view(-1, self.num_local_heads, self.qk_rope_head_dim)
-        k_pe = k_pe.view(-1, self.num_local_heads, self.qk_rope_head_dim)
+        q_pe = q_pe.reshape(-1, self.num_local_heads, self.qk_rope_head_dim)
+        k_pe = k_pe.reshape(-1, self.num_local_heads, self.qk_rope_head_dim)
 
         # Project KV through second stage
         kv = self.kv_norm(kv)
         kv_b_out = self.wkv_b(kv)
-        kv_b_out = kv_b_out.view(
+        kv_b_out = kv_b_out.reshape(
             -1, self.num_local_heads, self.qk_nope_head_dim + self.v_head_dim
         )
         k_nope, v = kv_b_out.split([self.qk_nope_head_dim, self.v_head_dim], dim=-1)
@@ -400,9 +408,9 @@ class DeepSeekV3MLA(nn.Module):
         k = torch.cat([k_nope, k_pe], dim=-1)
 
         # Reshape for attention: (total_tokens, num_heads, head_dim) -> (total_tokens, num_heads * head_dim)
-        q = q.view(-1, self.num_local_heads * self.qk_head_dim)
-        k = k.view(-1, self.num_local_heads * self.qk_head_dim)
-        v = v.view(-1, self.num_local_heads * self.v_head_dim)
+        q = q.reshape(-1, self.num_local_heads * self.qk_head_dim)
+        k = k.reshape(-1, self.num_local_heads * self.qk_head_dim)
+        v = v.reshape(-1, self.num_local_heads * self.v_head_dim)
 
         # Note: This is simplified - ideally we'd use the compressed kv representation
         # For now, treat as standard MHA with larger head dimensions
@@ -640,7 +648,10 @@ class DeepSeekV3Model(nn.Module):
         self.layers = nn.ModuleList(
             [
                 DeepSeekV3DecoderLayer(layer_id, config)
-                for layer_id in range(config.num_hidden_layers)
+                for layer_id in range(
+                    getattr(config, "load_partial_layers", None)
+                    or config.num_hidden_layers
+                )
             ]
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)

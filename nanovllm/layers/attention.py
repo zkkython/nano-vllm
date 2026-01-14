@@ -8,35 +8,69 @@ from nanovllm.utils.context import get_context
 
 
 @triton.jit
-def store_kvcache_kernel(
-    key_ptr,
-    key_stride,
-    value_ptr,
-    value_stride,
-    k_cache_ptr,
-    v_cache_ptr,
+def store_kv_kernel(
+    src_ptr,
+    src_stride,
+    cache_ptr,
+    cache_stride,
     slot_mapping_ptr,
-    D: tl.constexpr,
+    D,
+    BLOCK_SIZE: tl.constexpr,
 ):
     idx = tl.program_id(0)
-    key_offsets = idx * key_stride + tl.arange(0, D)
-    value_offsets = idx * value_stride + tl.arange(0, D)
-    key = tl.load(key_ptr + key_offsets)
-    value = tl.load(value_ptr + value_offsets)
+    src_offsets = idx * src_stride + tl.arange(0, BLOCK_SIZE)
+    mask = tl.arange(0, BLOCK_SIZE) < D
+    val = tl.load(src_ptr + src_offsets, mask=mask)
     slot = tl.load(slot_mapping_ptr + idx)
-    cache_offsets = slot * D + tl.arange(0, D)
-    tl.store(k_cache_ptr + cache_offsets, key)
-    tl.store(v_cache_ptr + cache_offsets, value)
+    cache_offsets = slot * cache_stride + tl.arange(0, BLOCK_SIZE)
+    tl.store(cache_ptr + cache_offsets, val, mask=mask)
 
 
-def store_kvcache(key: torch.Tensor, value: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, slot_mapping: torch.Tensor):
+def store_kvcache(
+    key: torch.Tensor,
+    value: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    slot_mapping: torch.Tensor,
+):
     N, num_heads, head_dim = key.shape
-    D = num_heads * head_dim
+    _, _, v_head_dim = value.shape
+    k_D = num_heads * head_dim
+    v_D = num_heads * v_head_dim
+
     assert key.stride(-1) == 1 and value.stride(-1) == 1
-    assert key.stride(1) == head_dim and value.stride(1) == head_dim
-    assert k_cache.stride(1) == D and v_cache.stride(1) == D
+    # 对于 MLA，head_dim 可能不同，这里分别检查
+    assert key.stride(1) == head_dim
+    assert value.stride(1) == v_head_dim
+
+    # k_cache 和 v_cache 的 stride(1) 代表一个 block 中单个 token 占用的空间
+    k_cache_stride = k_cache.stride(1)
+    v_cache_stride = v_cache.stride(1)
+
     assert slot_mapping.numel() == N
-    store_kvcache_kernel[(N,)](key, key.stride(0), value, value.stride(0), k_cache, v_cache, slot_mapping, D)
+
+    # 分别存储 K 和 V
+    k_block_size = triton.next_power_of_2(k_D)
+    store_kv_kernel[(N,)](
+        key,
+        key.stride(0),
+        k_cache,
+        k_cache_stride,
+        slot_mapping,
+        k_D,
+        BLOCK_SIZE=k_block_size,
+    )
+
+    v_block_size = triton.next_power_of_2(v_D)
+    store_kv_kernel[(N,)](
+        value,
+        value.stride(0),
+        v_cache,
+        v_cache_stride,
+        slot_mapping,
+        v_D,
+        BLOCK_SIZE=v_block_size,
+    )
 
 
 class Attention(nn.Module):
@@ -47,33 +81,68 @@ class Attention(nn.Module):
         head_dim,
         scale,
         num_kv_heads,
+        v_head_dim=None,
     ):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.scale = scale
         self.num_kv_heads = num_kv_heads
+        self.v_head_dim = v_head_dim or head_dim
         self.k_cache = self.v_cache = torch.tensor([])
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         o: torch.Tensor
         q = q.view(-1, self.num_heads, self.head_dim)
         k = k.view(-1, self.num_kv_heads, self.head_dim)
-        v = v.view(-1, self.num_kv_heads, self.head_dim)
+        v = v.view(-1, self.num_kv_heads, self.v_head_dim)
+
+        # Flash Attention requires head_dim(K) == head_dim(V)
+        # For MLA, we pad V to match K's head_dim if they differ
+        if self.head_dim != self.v_head_dim:
+            v = torch.nn.functional.pad(v, (0, self.head_dim - self.v_head_dim))
+
         context = get_context()
         k_cache, v_cache = self.k_cache, self.v_cache
         if k_cache.numel() and v_cache.numel():
             store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
+
+        # MLA 场景下 K 和 V 的 head_dim 可能不同，且 cache 可能有 padding
+        if k_cache.numel():
+            k_cache = k_cache[..., : self.head_dim]
+        if v_cache.numel():
+            # For MLA, use the full allocated 192 instead of sliced 128 to match K
+            v_cache = v_cache[..., : self.head_dim]
+
         if context.is_prefill:
-            if context.block_tables is not None:    # prefix cache
+            if context.block_tables is not None:  # prefix cache
                 k, v = k_cache, v_cache
-            o = flash_attn_varlen_func(q, k, v,
-                                       max_seqlen_q=context.max_seqlen_q, cu_seqlens_q=context.cu_seqlens_q,
-                                       max_seqlen_k=context.max_seqlen_k, cu_seqlens_k=context.cu_seqlens_k,
-                                       softmax_scale=self.scale, causal=True, block_table=context.block_tables)
-        else:    # decode
-            o = flash_attn_with_kvcache(q.unsqueeze(1), k_cache, v_cache,
-                                        cache_seqlens=context.context_lens, block_table=context.block_tables, 
-                                        softmax_scale=self.scale, causal=True)
-        o = o.view(-1, self.num_heads * self.head_dim)
+            o = flash_attn_varlen_func(
+                q,
+                k,
+                v,
+                max_seqlen_q=context.max_seqlen_q,
+                cu_seqlens_q=context.cu_seqlens_q,
+                max_seqlen_k=context.max_seqlen_k,
+                cu_seqlens_k=context.cu_seqlens_k,
+                softmax_scale=self.scale,
+                causal=True,
+                block_table=context.block_tables,
+            )
+        else:  # decode
+            o = flash_attn_with_kvcache(
+                q.unsqueeze(1),
+                k_cache,
+                v_cache,
+                cache_seqlens=context.context_lens,
+                block_table=context.block_tables,
+                softmax_scale=self.scale,
+                causal=True,
+            )
+
+        # Slice output if we padded V
+        if self.head_dim != self.v_head_dim:
+            o = o[..., : self.v_head_dim]
+
+        o = o.reshape(-1, self.num_heads * self.v_head_dim)
         return o

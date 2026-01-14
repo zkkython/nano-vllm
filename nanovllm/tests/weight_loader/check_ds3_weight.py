@@ -54,8 +54,9 @@ def deepseek_v3_partial_layer_infer():
     # 这样可以大幅减少初始化时间和显存占用
     llm = LLM(
         model_path,
-        max_num_batched_tokens=16385,
+        max_num_batched_tokens=5000,
         max_num_seqs=4,
+        gpu_memory_utilization=0.8,
         tensor_parallel_size=8,
         load_partial_layers=3,  # 关键参数：只加载前 2 层
         enforce_eager=True,

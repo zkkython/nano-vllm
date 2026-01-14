@@ -79,8 +79,8 @@ def build_deepseek_v3_weight_mappings(
             )
 
         # KV 投影: 使用 LoRA
-        weight_mappings[f"{prefix}.self_attn.kv_a_proj_with_mqa.weight"] = WeightMapping(
-            target_path=f"{prefix}.self_attn.wkv_a.weight"
+        weight_mappings[f"{prefix}.self_attn.kv_a_proj_with_mqa.weight"] = (
+            WeightMapping(target_path=f"{prefix}.self_attn.wkv_a.weight")
         )
         weight_mappings[f"{prefix}.self_attn.kv_a_layernorm.weight"] = WeightMapping(
             target_path=f"{prefix}.self_attn.kv_norm.weight"
@@ -88,7 +88,6 @@ def build_deepseek_v3_weight_mappings(
         weight_mappings[f"{prefix}.self_attn.kv_b_proj.weight"] = WeightMapping(
             target_path=f"{prefix}.self_attn.wkv_b.weight"
         )
-        
 
         # Output projection
         weight_mappings[f"{prefix}.self_attn.o_proj.weight"] = WeightMapping(

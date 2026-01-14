@@ -169,7 +169,8 @@ class ModelRunner:
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
-
+        # 为 hf_config 注入 load_partial_layers，方便模型初始化时按需分配内存
+        setattr(hf_config, "load_partial_layers", config.load_partial_layers)
         self.model = MODELS_MAPPING[hf_config.model_type](hf_config)
         # load_model(self.model, config.model)
         self.model.load_weights(
@@ -379,12 +380,21 @@ class ModelRunner:
         used = total - free
         peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
         current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
-        num_kv_heads = hf_config.num_key_value_heads // self.world_size
-        head_dim = (
-            hf_config.head_dim
-            if hasattr(hf_config, "head_dim")
-            else hf_config.hidden_size // hf_config.num_attention_heads
+        num_kv_heads = (
+            getattr(hf_config, "num_key_value_heads", hf_config.num_attention_heads)
+            // self.world_size
         )
+        if hf_config.model_type == "deepseek_v3":
+            # DeepSeek-V3 (MLA) uses different head dims for QK and V
+            qk_head_dim = getattr(hf_config, "qk_nope_head_dim", 0) + getattr(
+                hf_config, "qk_rope_head_dim", 0
+            )
+            v_head_dim = getattr(hf_config, "v_head_dim", 0)
+            head_dim = max(qk_head_dim, v_head_dim)
+        else:
+            head_dim = getattr(hf_config, "head_dim", None) or (
+                hf_config.hidden_size // hf_config.num_attention_heads
+            )
         block_bytes = (
             2
             * hf_config.num_hidden_layers
