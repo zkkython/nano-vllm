@@ -39,6 +39,9 @@ def store_kvcache(
     v_D = num_heads * v_head_dim
 
     assert key.stride(-1) == 1 and value.stride(-1) == 1
+    # print(
+    #     f"key shape {key.shape}, value shape {value.shape}, {key.stride(1)}, {head_dim}, {value.stride(1)}, {v_head_dim}"
+    # )
     # 对于 MLA，head_dim 可能不同，这里分别检查
     assert key.stride(1) == head_dim
     assert value.stride(1) == v_head_dim
@@ -46,7 +49,7 @@ def store_kvcache(
     # k_cache 和 v_cache 的 stride(1) 代表一个 block 中单个 token 占用的空间
     k_cache_stride = k_cache.stride(1)
     v_cache_stride = v_cache.stride(1)
-
+    # print(f"slot numel: {slot_mapping.numel()}, N {N}")
     assert slot_mapping.numel() == N
 
     # 分别存储 K 和 V
@@ -73,6 +76,14 @@ def store_kvcache(
     )
 
 
+"""
+切分TP后的Attention
+所以num_heads 不是原有的 num_heads，而是 num_heads // tp_size
+num_kv_heads 也不是原有的 num_kv_heads，而是 num_kv_heads // tp_size
+
+"""
+
+
 class Attention(nn.Module):
 
     def __init__(
@@ -90,12 +101,18 @@ class Attention(nn.Module):
         self.num_kv_heads = num_kv_heads
         self.v_head_dim = v_head_dim or head_dim
         self.k_cache = self.v_cache = torch.tensor([])
+        # print(f"attention heads {num_heads}, kv heads {num_kv_heads}")
+
+    def _repeat_kv_heads(self, x: torch.Tensor):
+        return x[:, : self.num_kv_heads].repeat(
+            1, self.num_heads // self.num_kv_heads, 1
+        )
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         o: torch.Tensor
-        q = q.view(-1, self.num_heads, self.head_dim)
-        k = k.view(-1, self.num_kv_heads, self.head_dim)
-        v = v.view(-1, self.num_kv_heads, self.v_head_dim)
+        q = q.reshape(-1, self.num_heads, self.head_dim)
+        k = k.reshape(-1, self.num_kv_heads, self.head_dim).contiguous()
+        v = v.reshape(-1, self.num_kv_heads, self.v_head_dim).contiguous()
 
         # Flash Attention requires head_dim(K) == head_dim(V)
         # For MLA, we pad V to match K's head_dim if they differ
@@ -117,6 +134,7 @@ class Attention(nn.Module):
         if context.is_prefill:
             if context.block_tables is not None:  # prefix cache
                 k, v = k_cache, v_cache
+
             o = flash_attn_varlen_func(
                 q,
                 k,
@@ -130,6 +148,7 @@ class Attention(nn.Module):
                 block_table=context.block_tables,
             )
         else:  # decode
+
             o = flash_attn_with_kvcache(
                 q.unsqueeze(1),
                 k_cache,

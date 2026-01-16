@@ -4,6 +4,7 @@ import torch
 import torch.distributed as dist
 from typing import Any
 import pickle
+import numpy as np
 
 
 def init_distributed_environment(
@@ -50,27 +51,26 @@ def broadcast_object(obj: Any, src: int = 0) -> Any:
         obj_bytes = pickle.dumps(obj)
         obj_size = len(obj_bytes)
         size_tensor = torch.tensor(
-            [obj_size], dtype=torch.long, device=f"cuda:{get_rank()}"
+            [obj_size], dtype=torch.long, device=f"cuda:{torch.cuda.current_device()}"
         )
     else:
-        size_tensor = torch.zeros(1, dtype=torch.long, device=f"cuda:{get_rank()}")
+        size_tensor = torch.zeros(1, dtype=torch.long, device=f"cuda:{torch.cuda.current_device()}")
 
     dist.broadcast(size_tensor, src=src)
 
     if rank != src:
         obj_size = size_tensor.item()
-        obj_bytes_tensor = torch.zeros(
-            obj_size, dtype=torch.uint8, device=f"cuda:{get_rank()}"
+        obj_bytes_tensor = torch.empty(
+            obj_size, dtype=torch.uint8, device=f"cuda:{torch.cuda.current_device()}"
         )
     else:
-        obj_bytes_tensor = torch.tensor(
-            list(obj_bytes), dtype=torch.uint8, device=f"cuda:{get_rank()}"
-        )
+        # 优化：避免 list(obj_bytes) 导致的巨大性能开销
+        obj_bytes_tensor = torch.from_numpy(np.frombuffer(obj_bytes, dtype=np.uint8)).cuda()
 
     dist.broadcast(obj_bytes_tensor, src=src)
 
     if rank != src:
-        obj_bytes = bytes(obj_bytes_tensor.cpu().numpy())
+        obj_bytes = obj_bytes_tensor.cpu().numpy().tobytes()
         obj = pickle.loads(obj_bytes)
 
     return obj

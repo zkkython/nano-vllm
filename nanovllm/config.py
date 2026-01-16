@@ -10,7 +10,7 @@ from nanovllm.log_config import LogConfig
 class Config:
     model: str
     max_num_batched_tokens: int = 16384
-    max_num_seqs: int = 1
+    max_num_seqs: int = 256
     max_model_len: int = (
         4096  # max_model_len确实代表了单个请求（sequence）的最大长度限制，这个长度包括了prefill阶段的输入token数量加上后续decode阶段生成的token数量的总和
     )
@@ -26,6 +26,9 @@ class Config:
 
     # 权重加载配置
     load_partial_layers: int | None = None  # 只加载前 N 层，None 表示加载所有层
+
+    # 量化配置
+    quantization: str | None = None  # 量化方式，例如 "fp8"
 
     # 日志配置
     log_config: Optional[LogConfig] = None

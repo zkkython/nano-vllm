@@ -1,49 +1,42 @@
 import torch
 import torch.distributed as dist
 
-from nanovllm.models.deepseek_v3 import DeepSeekV3ForCausalLM
-from nanovllm import LLM, SamplingParams
+from nanovllm.models.qwen3_moe import Qwen3MoeForCausalLM
 from transformers import AutoConfig
+from nanovllm import LLM, SamplingParams
 
-model_path = "/data/ds-671"
+model_path = "/data/hf/Qwen3-30B-A3B-Instruct-2507"
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 
 def check():
-    """示例：部分层加载 DeepSeek-V3."""
+    """示例：部分层加载 Qwen3 30b moe."""
     torch.set_default_dtype(torch.bfloat16)
     print("\n" + "=" * 70)
-    print("DeepSeek-V3 部分层加载示例")
+    print("Qwen3 30b moe 部分层加载示例")
     print("=" * 70)
 
     if not dist.is_initialized():
         dist.init_process_group("nccl", "tcp://localhost:2333", world_size=1, rank=0)
 
     # 使用真实配置
+
     config = AutoConfig.from_pretrained(model_path)
-    config.quantization = "fp8"
-
-    def print_gpu_memory(label):
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            allocated = torch.cuda.memory_allocated() / (1024**3)
-            reserved = torch.cuda.memory_reserved() / (1024**3)
-            print(
-                f"[MEMORY] {label}: Allocated={allocated:.5f}GB, Reserved={reserved:.5f}GB"
-            )
-
-    print_gpu_memory("Before model init")
-    model = DeepSeekV3ForCausalLM(config)
-    print_gpu_memory("After model init (Empty)")
+    config.load_partial_layers = 2
+    print(f"qwen3 mode config={config}")
+    model = Qwen3MoeForCausalLM(config)
 
     # 只加载前 2 层进行快速测试
-    print(f"\n只加载前 2 层（共 {config.num_hidden_layers} 层）...")
-    stats = model.load_weights(
-        config=config, model_path=model_path, load_partial_layers=4
+    print(
+        f"\n只加载前 {config.load_partial_layers} 层（共 {config.num_hidden_layers} 层）..."
     )
-    print_gpu_memory("After weight loading")
+    stats = model.load_weights(
+        config=config,
+        model_path=model_path,
+        load_partial_layers=config.load_partial_layers,
+    )
 
     print("\n权重加载统计:")
     print(f"  总权重数量: {stats['total_weights']}")
@@ -60,22 +53,17 @@ def check():
     print("\n✅ 部分层加载完成！节省内存和时间")
     # 检查某一层（例如第 0 层）的 MLP 权重
     layer_id = 0
-    gate_proj = model.model.layers[layer_id].mlp.gate_proj
-
-    print(f"Weight dtype: {gate_proj.weight.dtype}")
-    print(f"Weight scale is None: {gate_proj.weight_scale is None}")
-    if gate_proj.weight_scale is not None:
-        print(f"Weight scale shape: {gate_proj.weight_scale.shape}")
-        print(f"Weight scale example values: {gate_proj.weight_scale.flatten()[:5]}")
+    gate = model.transformers.layers[layer_id].mlp.gate
+    print(f"Weight dtype: {gate.weight.dtype}")
     print("=" * 70)
 
 
-def deepseek_v3_partial_layer_infer():
-    torch.set_default_dtype(torch.bfloat16)
-
-    """示例：只加载前 2 层进行快速验证"""
+def qwen_30b_moe_partial_layer_infer():
+    # torch.set_default_dtype(torch.bfloat16)
+    load_partial_layers = 48
+    """示例：只加载前 load_partial_layers 层进行快速验证"""
     print("=" * 70)
-    print("Example: Partial Layer Loading for Quick Debugging")
+    print(f"Example: {load_partial_layers} Partial Layer Loading for Quick Debugging")
     print("=" * 70)
 
     # 只加载前 2 层（layer 0 和 layer 1）
@@ -87,12 +75,14 @@ def deepseek_v3_partial_layer_infer():
         gpu_memory_utilization=0.8,
         # quantization="fp8",
         tensor_parallel_size=8,
-        load_partial_layers=4,  # 关键参数：只加载前 2 层
+        load_partial_layers=load_partial_layers,  # 关键参数：只加载前 2 层
         enforce_eager=True,
     )
 
     print("\n模型加载完成！")
-    print("注意：只加载了前 2 层，推理结果仅供调试参考，不代表真实效果。\n")
+    print(
+        "注意：只加载了前 {load_partial_layers} 层，推理结果仅供调试参考，不代表真实效果。\n"
+    )
 
     # 简单推理测试
     prompt = "你好"
@@ -107,5 +97,4 @@ def deepseek_v3_partial_layer_infer():
 
 
 if __name__ == "__main__":
-    # check()
-    deepseek_v3_partial_layer_infer()
+    qwen_30b_moe_partial_layer_infer()

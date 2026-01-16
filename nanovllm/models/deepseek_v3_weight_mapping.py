@@ -62,14 +62,19 @@ def build_deepseek_v3_weight_mappings(
         # Q 投影: 根据 q_lora_rank 决定是否使用 LoRA
         if q_lora_rank == 0:
             # 直接投影
-            # TODO Need to check when the feature is turning on
             weight_mappings[f"{prefix}.self_attn.wq.weight"] = WeightMapping(
                 target_path=f"{prefix}.self_attn.wq.weight"
+            )
+            weight_mappings[f"{prefix}.self_attn.wq.weight_scale_inv"] = WeightMapping(
+                target_path=f"{prefix}.self_attn.wq.weight_scale"
             )
         else:
             # LoRA 投影
             weight_mappings[f"{prefix}.self_attn.q_a_proj.weight"] = WeightMapping(
                 target_path=f"{prefix}.self_attn.wq_a.weight"
+            )
+            weight_mappings[f"{prefix}.self_attn.q_a_proj.weight_scale_inv"] = (
+                WeightMapping(target_path=f"{prefix}.self_attn.wq_a.weight_scale")
             )
             weight_mappings[f"{prefix}.self_attn.q_a_layernorm.weight"] = WeightMapping(
                 target_path=f"{prefix}.self_attn.q_norm.weight"
@@ -77,10 +82,16 @@ def build_deepseek_v3_weight_mappings(
             weight_mappings[f"{prefix}.self_attn.q_b_proj.weight"] = WeightMapping(
                 target_path=f"{prefix}.self_attn.wq_b.weight"
             )
+            weight_mappings[f"{prefix}.self_attn.q_b_proj.weight_scale_inv"] = (
+                WeightMapping(target_path=f"{prefix}.self_attn.wq_b.weight_scale")
+            )
 
         # KV 投影: 使用 LoRA
         weight_mappings[f"{prefix}.self_attn.kv_a_proj_with_mqa.weight"] = (
             WeightMapping(target_path=f"{prefix}.self_attn.wkv_a.weight")
+        )
+        weight_mappings[f"{prefix}.self_attn.kv_a_proj_with_mqa.weight_scale_inv"] = (
+            WeightMapping(target_path=f"{prefix}.self_attn.wkv_a.weight_scale")
         )
         weight_mappings[f"{prefix}.self_attn.kv_a_layernorm.weight"] = WeightMapping(
             target_path=f"{prefix}.self_attn.kv_norm.weight"
@@ -88,10 +99,16 @@ def build_deepseek_v3_weight_mappings(
         weight_mappings[f"{prefix}.self_attn.kv_b_proj.weight"] = WeightMapping(
             target_path=f"{prefix}.self_attn.wkv_b.weight"
         )
+        weight_mappings[f"{prefix}.self_attn.kv_b_proj.weight_scale_inv"] = (
+            WeightMapping(target_path=f"{prefix}.self_attn.wkv_b.weight_scale")
+        )
 
         # Output projection
         weight_mappings[f"{prefix}.self_attn.o_proj.weight"] = WeightMapping(
             target_path=f"{prefix}.self_attn.wo.weight"
+        )
+        weight_mappings[f"{prefix}.self_attn.o_proj.weight_scale_inv"] = WeightMapping(
+            target_path=f"{prefix}.self_attn.wo.weight_scale"
         )
 
         # ===== MLP / MoE =====
@@ -124,17 +141,29 @@ def build_deepseek_v3_weight_mappings(
             weight_mappings[f"{prefix}.mlp.gate_proj.weight"] = WeightMapping(
                 target_path=f"{prefix}.mlp.gate_proj.weight"
             )
+            weight_mappings[f"{prefix}.mlp.gate_proj.weight_scale_inv"] = WeightMapping(
+                target_path=f"{prefix}.mlp.gate_proj.weight_scale"
+            )
             weight_mappings[f"{prefix}.mlp.up_proj.weight"] = WeightMapping(
                 target_path=f"{prefix}.mlp.up_proj.weight"
             )
+            weight_mappings[f"{prefix}.mlp.up_proj.weight_scale_inv"] = WeightMapping(
+                target_path=f"{prefix}.mlp.up_proj.weight_scale"
+            )
             weight_mappings[f"{prefix}.mlp.down_proj.weight"] = WeightMapping(
                 target_path=f"{prefix}.mlp.down_proj.weight"
+            )
+            weight_mappings[f"{prefix}.mlp.down_proj.weight_scale_inv"] = WeightMapping(
+                target_path=f"{prefix}.mlp.down_proj.weight_scale"
             )
         else:
             # 其余层使用 MoE
             # Gate 权重
             weight_mappings[f"{prefix}.mlp.gate.weight"] = WeightMapping(
                 target_path=f"{prefix}.mlp.gate.weight"
+            )
+            weight_mappings[f"{prefix}.mlp.gate.e_score_correction_bias"] = (
+                WeightMapping(target_path=f"{prefix}.mlp.gate.e_score_correction_bias")
             )
             # Gate bias (可选，某些配置有)
             # 在实际加载时会自动处理不存在的权重
@@ -151,15 +180,30 @@ def build_deepseek_v3_weight_mappings(
                         target_path=f"{prefix}.mlp.shared_experts.gate_proj.weight"
                     )
                 )
+                weight_mappings[
+                    f"{prefix}.mlp.shared_experts.gate_proj.weight_scale_inv"
+                ] = WeightMapping(
+                    target_path=f"{prefix}.mlp.shared_experts.gate_proj.weight_scale"
+                )
                 weight_mappings[f"{prefix}.mlp.shared_experts.up_proj.weight"] = (
                     WeightMapping(
                         target_path=f"{prefix}.mlp.shared_experts.up_proj.weight"
                     )
                 )
+                weight_mappings[
+                    f"{prefix}.mlp.shared_experts.up_proj.weight_scale_inv"
+                ] = WeightMapping(
+                    target_path=f"{prefix}.mlp.shared_experts.up_proj.weight_scale"
+                )
                 weight_mappings[f"{prefix}.mlp.shared_experts.down_proj.weight"] = (
                     WeightMapping(
                         target_path=f"{prefix}.mlp.shared_experts.down_proj.weight"
                     )
+                )
+                weight_mappings[
+                    f"{prefix}.mlp.shared_experts.down_proj.weight_scale_inv"
+                ] = WeightMapping(
+                    target_path=f"{prefix}.mlp.shared_experts.down_proj.weight_scale"
                 )
 
     return weight_mappings
@@ -191,11 +235,20 @@ def build_deepseek_v3_expert_mappings(
             expert_mappings[f"{expert_prefix}.gate_proj.weight"] = WeightMapping(
                 target_path=f"{expert_prefix}.gate_proj.weight"
             )
+            expert_mappings[f"{expert_prefix}.gate_proj.weight_scale_inv"] = (
+                WeightMapping(target_path=f"{expert_prefix}.gate_proj.weight_scale")
+            )
             expert_mappings[f"{expert_prefix}.up_proj.weight"] = WeightMapping(
                 target_path=f"{expert_prefix}.up_proj.weight"
             )
+            expert_mappings[f"{expert_prefix}.up_proj.weight_scale_inv"] = (
+                WeightMapping(target_path=f"{expert_prefix}.up_proj.weight_scale")
+            )
             expert_mappings[f"{expert_prefix}.down_proj.weight"] = WeightMapping(
                 target_path=f"{expert_prefix}.down_proj.weight"
+            )
+            expert_mappings[f"{expert_prefix}.down_proj.weight_scale_inv"] = (
+                WeightMapping(target_path=f"{expert_prefix}.down_proj.weight_scale")
             )
 
     return expert_mappings

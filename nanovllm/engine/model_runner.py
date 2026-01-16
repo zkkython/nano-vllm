@@ -171,6 +171,7 @@ class ModelRunner:
         torch.set_default_device("cuda")
         # 为 hf_config 注入 load_partial_layers，方便模型初始化时按需分配内存
         setattr(hf_config, "load_partial_layers", config.load_partial_layers)
+        setattr(hf_config, "quantization", config.quantization)
         self.model = MODELS_MAPPING[hf_config.model_type](hf_config)
         # load_model(self.model, config.model)
         self.model.load_weights(
@@ -384,6 +385,8 @@ class ModelRunner:
             getattr(hf_config, "num_key_value_heads", hf_config.num_attention_heads)
             // self.world_size
         )
+        # handling the kv heads < attention heads
+        num_kv_heads = max(1, num_kv_heads)
         if hf_config.model_type == "deepseek_v3":
             # DeepSeek-V3 (MLA) uses different head dims for QK and V
             qk_head_dim = getattr(hf_config, "qk_nope_head_dim", 0) + getattr(
@@ -708,12 +711,14 @@ class ModelRunner:
         hf_config = config.hf_config
         max_bs = min(self.config.max_num_seqs, 512)
         max_num_blocks = (config.max_model_len + self.block_size - 1) // self.block_size
-        input_ids = torch.zeros(max_bs, dtype=torch.int64)
-        positions = torch.zeros(max_bs, dtype=torch.int64)
-        slot_mapping = torch.zeros(max_bs, dtype=torch.int32)
-        context_lens = torch.zeros(max_bs, dtype=torch.int32)
-        block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32)
-        outputs = torch.zeros(max_bs, hf_config.hidden_size)
+        device = f"cuda:{self.actual_device_id}"
+        input_ids = torch.zeros(max_bs, dtype=torch.int64, device=device)
+        positions = torch.zeros(max_bs, dtype=torch.int64, device=device)
+        # 初始化为有效值，避免 kernel 报错
+        slot_mapping = torch.arange(max_bs, dtype=torch.int32, device=device)
+        context_lens = torch.ones(max_bs, dtype=torch.int32, device=device)
+        block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32, device=device)
+        outputs = torch.zeros(max_bs, hf_config.hidden_size, device=device)
         self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
         self.graphs = {}
         self.graph_pool = None
@@ -726,9 +731,13 @@ class ModelRunner:
                 context_lens=context_lens[:bs],
                 block_tables=block_tables[:bs],
             )
-            outputs[:bs] = self.model(input_ids[:bs], positions[:bs])  # warmup
+            # Warmup: 确保所有 kernel 都已编译（包括 Triton kernels）
+            hidden_states = self.model(input_ids[:bs], positions[:bs])
+            outputs[:bs].copy_(hidden_states)
+            
             with torch.cuda.graph(graph, self.graph_pool):
-                outputs[:bs] = self.model(input_ids[:bs], positions[:bs])  # capture
+                hidden_states = self.model(input_ids[:bs], positions[:bs])
+                outputs[:bs].copy_(hidden_states)
             if self.graph_pool is None:
                 self.graph_pool = graph.pool()
             self.graphs[bs] = graph

@@ -151,11 +151,20 @@ class WeightLoader:
                 # 如果参数上挂了自定义 weight_loader（例如并行 Linear），优先走自定义逻辑
                 weight_loader = getattr(param, "weight_loader", None)
                 if weight_loader is not None:
-                    if mapping is not None and mapping.loader_arg is not None:
-                        weight_loader(param, tensor, mapping.loader_arg)
-                    else:
-                        weight_loader(param, tensor)
-                    loaded_any = True
+                    try:
+                        if mapping is not None and mapping.loader_arg is not None:
+                            weight_loader(param, tensor, mapping.loader_arg)
+                        else:
+                            weight_loader(param, tensor)
+                        loaded_any = True
+                    except Exception as e:
+                        logger.error(
+                            "Error loading weight hf_key %s: target %s: %s, skipping",
+                            hf_key,
+                            target_name,
+                            e,
+                        )
+                        raise e
                 else:
                     if tensor.shape != param.shape:
                         logger.warning(

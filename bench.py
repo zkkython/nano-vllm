@@ -1,19 +1,17 @@
-import os
 import time
 from random import randint, seed
 from nanovllm import LLM, SamplingParams
 from nanovllm.log_config import LogConfig, LogLevel
+import argparse
 
-# from vllm import LLM, SamplingParams
 
-
-def main():
+def main(args):
     seed(0)
     num_seqs = 256
     max_input_len = 1024
     max_ouput_len = 1024
 
-    path = os.path.expanduser("/root/.cache/modelscope/hub/models/Qwen/Qwen3-8B")
+    # path = os.path.expanduser("/root/.cache/modelscope/hub/models/Qwen/Qwen3-8B")
     log_config = LogConfig(
         global_level=LogLevel.ERROR,
         chunked_prefill=LogLevel.INFO,  # 只调试 chunked prefill
@@ -21,11 +19,11 @@ def main():
         model_runner=LogLevel.INFO,
     )
     llm = LLM(
-        path,
+        args.model,
         log_config=log_config,
         enforce_eager=False,
         max_model_len=2050,
-        tensor_parallel_size=8,
+        tensor_parallel_size=args.tp,
     )
 
     prompt_token_ids = [
@@ -54,4 +52,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    args = argparse.ArgumentParser()
+    args.add_argument(
+        "--model",
+        type=str,
+        
+        default="/root/.cache/modelscope/hub/models/Qwen/Qwen3-8B",
+    )
+    args.add_argument(
+        "--tp",
+        type=int,
+      
+        default=8,
+    )
+    main(args=args.parse_args())

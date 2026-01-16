@@ -94,13 +94,15 @@ def example_partial_load_deepseek_v3():
     #     q_lora_rank=512,
     #     kv_lora_rank=512,
     # )
-
+    config.load_partial_layers = 2
     model = DeepSeekV3ForCausalLM(config)
 
     # 只加载前 2 层进行快速测试
     print(f"\n只加载前 2 层（共 {config.num_hidden_layers} 层）...")
     stats = model.load_weights(
-        config=config, model_path=model_path, load_partial_layers=1
+        config=config,
+        model_path=model_path,
+        load_partial_layers=config.load_partial_layers,
     )
 
     print("\n权重加载统计:")
