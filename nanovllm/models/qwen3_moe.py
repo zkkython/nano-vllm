@@ -187,9 +187,12 @@ class Qwen3MoeExperts(nn.ModuleList):
             top_k_index, num_classes=self.num_experts
         ).permute(2, 1, 0)
 
+        # 注意：.nonzero() 会触发 CPU-GPU 同步，不兼容 CUDA Graph 捕获。
+        # 目前 MoE 模型在 ModelRunner 中已自动切换到 eager 模式。
         expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
         for expert_idx in expert_hit:
-            idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
+            expert_idx = expert_idx.item()  # 获取标量值
+            idx, top_x = torch.where(expert_mask[expert_idx])
             current_state = hidden_states[None, top_x].reshape(
                 -1, hidden_states.shape[-1]
             )

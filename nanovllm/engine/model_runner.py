@@ -197,6 +197,16 @@ class ModelRunner:
                 rank=self.rank,
             )
 
+        # 检测是否为 MoE 模型，目前 MoE 模型的动态路由不兼容 CUDA Graph
+        is_moe = hf_config.model_type in ["qwen3_moe", "deepseek_v3"]
+        if is_moe and not self.enforce_eager:
+            log_info(
+                "model_runner",
+                f"Model type {hf_config.model_type} detected. CUDA Graph is currently not supported for MoE, disabling it.",
+                rank=self.rank,
+            )
+            self.enforce_eager = True
+
         if not self.enforce_eager:
             self.capture_cudagraph()
         torch.set_default_device("cpu")
