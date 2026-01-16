@@ -14,6 +14,9 @@ from nanovllm.layers.linear import (
 from nanovllm.layers.rotary_embedding import get_rope
 
 
+from nanovllm.models.models_mapping import register_model
+
+
 class Qwen2Attention(nn.Module):
 
     def __init__(
@@ -211,6 +214,7 @@ class Qwen2Model(nn.Module):
         return hidden_states
 
 
+@register_model("qwen2")
 class Qwen2ForCausalLM(nn.Module):
     packed_modules_mapping = {
         "q_proj": ("qkv_proj", "q"),

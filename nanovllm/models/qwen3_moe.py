@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.distributed as dist
 from transformers.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+from nanovllm.models.models_mapping import register_model
 
 from nanovllm.layers.attention import Attention
 from nanovllm.layers.layernorm import RMSNorm
@@ -323,6 +324,7 @@ class Qwen3MoeModel(nn.Module):
         return hidden_states
 
 
+@register_model("qwen3_moe")
 class Qwen3MoeForCausalLM(nn.Module):
 
     def __init__(self, config: Qwen3MoeConfig) -> None:

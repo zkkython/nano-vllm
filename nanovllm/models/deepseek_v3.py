@@ -17,6 +17,7 @@ from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
 from nanovllm.utils.context import get_context
 from transformers import PretrainedConfig
 import torch.distributed as dist
+from nanovllm.models.models_mapping import register_model
 
 world_size = 1
 rank = 0
@@ -577,6 +578,7 @@ class DeepSeekV3Model(nn.Module):
         return hidden_states
 
 
+@register_model("deepseek_v3")
 class DeepSeekV3ForCausalLM(nn.Module):
     """DeepSeek-V3 model for causal language modeling."""
 

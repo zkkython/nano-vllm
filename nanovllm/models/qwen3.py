@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.distributed as dist
 from transformers import Qwen3Config
+from nanovllm.models.models_mapping import register_model
 
 from nanovllm.layers.activation import SiluAndMul
 from nanovllm.layers.attention import Attention
@@ -222,6 +223,7 @@ class Qwen3Model(nn.Module):
         return hidden_states
 
 
+@register_model("qwen3")
 class Qwen3ForCausalLM(nn.Module):
     packed_modules_mapping = {
         "q_proj": ("qkv_proj", "q"),
