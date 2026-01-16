@@ -54,7 +54,9 @@ def broadcast_object(obj: Any, src: int = 0) -> Any:
             [obj_size], dtype=torch.long, device=f"cuda:{torch.cuda.current_device()}"
         )
     else:
-        size_tensor = torch.zeros(1, dtype=torch.long, device=f"cuda:{torch.cuda.current_device()}")
+        size_tensor = torch.zeros(
+            1, dtype=torch.long, device=f"cuda:{torch.cuda.current_device()}"
+        )
 
     dist.broadcast(size_tensor, src=src)
 
@@ -65,7 +67,9 @@ def broadcast_object(obj: Any, src: int = 0) -> Any:
         )
     else:
         # 优化：避免 list(obj_bytes) 导致的巨大性能开销
-        obj_bytes_tensor = torch.from_numpy(np.frombuffer(obj_bytes, dtype=np.uint8)).cuda()
+        obj_bytes_tensor = torch.from_numpy(
+            np.frombuffer(obj_bytes, dtype=np.uint8)
+        ).cuda()
 
     dist.broadcast(obj_bytes_tensor, src=src)
 

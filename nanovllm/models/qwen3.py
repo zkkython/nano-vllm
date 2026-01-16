@@ -252,7 +252,9 @@ class Qwen3ForCausalLM(nn.Module):
         Returns:
             加载统计信息字典
         """
-        from nanovllm.models.qwen3_weight_mapping import build_qwen3_weight_mappings
+        from nanovllm.weight_mappings.qwen3_weight_mapping import (
+            build_qwen3_weight_mappings,
+        )
         from nanovllm.utils.weight_loader import WeightLoader
 
         weight_mappings = build_qwen3_weight_mappings(config.num_hidden_layers)

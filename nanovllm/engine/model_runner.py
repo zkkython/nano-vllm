@@ -727,7 +727,9 @@ class ModelRunner:
         # 初始化为有效值，避免 kernel 报错
         slot_mapping = torch.arange(max_bs, dtype=torch.int32, device=device)
         context_lens = torch.ones(max_bs, dtype=torch.int32, device=device)
-        block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32, device=device)
+        block_tables = torch.zeros(
+            max_bs, max_num_blocks, dtype=torch.int32, device=device
+        )
         outputs = torch.zeros(max_bs, hf_config.hidden_size, device=device)
         self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
         self.graphs = {}
@@ -744,7 +746,7 @@ class ModelRunner:
             # Warmup: 确保所有 kernel 都已编译（包括 Triton kernels）
             hidden_states = self.model(input_ids[:bs], positions[:bs])
             outputs[:bs].copy_(hidden_states)
-            
+
             with torch.cuda.graph(graph, self.graph_pool):
                 hidden_states = self.model(input_ids[:bs], positions[:bs])
                 outputs[:bs].copy_(hidden_states)

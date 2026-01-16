@@ -629,7 +629,7 @@ class DeepSeekV3ForCausalLM(nn.Module):
         Returns:
             加载统计信息字典
         """
-        from nanovllm.models.deepseek_v3_weight_mapping import (
+        from nanovllm.weight_mappings.deepseek_v3_weight_mapping import (
             build_deepseek_v3_weight_mappings,
             build_deepseek_v3_expert_mappings,
         )
