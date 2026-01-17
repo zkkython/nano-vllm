@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
-from nanovllm.utils.fp8 import linear_fp8
+from nanovllm.layers.fp8 import linear_fp8
 
 
 def divide(numerator, denominator):
