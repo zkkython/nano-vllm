@@ -13,6 +13,7 @@ from nanovllm.layers.linear import (
 )
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+from nanovllm.layers.fused_moe import FusedMoE
 from nanovllm.utils.weight_loader import WeightLoader, WeightMapping
 import torch.nn.functional as F
 
@@ -156,6 +157,25 @@ class Qwen3MoeAttention(nn.Module):
         return output
 
 
+class Qwen3MoeMLP(nn.Module):
+    def __init__(self, config, intermediate_size=None):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = (
+            config.intermediate_size if intermediate_size is None else intermediate_size
+        )
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        if config.hidden_act == "silu":
+            self.act_fn = nn.functional.silu
+
+    def forward(self, x):
+        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return down_proj
+
+
 class Qwen3MoeExperts(nn.ModuleList):
     """
     ModuleList of experts.
@@ -210,7 +230,17 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
     def __init__(self, config: Qwen3MoeConfig):
         super().__init__()
         self.gate = ReplicatedLinear(config.hidden_size, config.num_experts, bias=False)
-        self.experts = Qwen3MoeExperts(config)
+        self.use_fused_moe = getattr(config, "use_fused_moe", True)
+        self.use_triton_moe = getattr(config, "use_triton_moe", False)
+        if self.use_fused_moe:
+            self.experts = FusedMoE(
+                config.num_experts,
+                config.hidden_size,
+                config.moe_intermediate_size,
+                use_triton=self.use_triton_moe,
+            )
+        else:
+            self.experts = Qwen3MoeExperts(config)
         self.num_experts_per_tok = config.num_experts_per_tok
         self.norm_topk_prob = config.norm_topk_prob
 
@@ -231,29 +261,15 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         selected_experts, routing_weights = self.route_tokens_to_experts(
             hidden_states_reshaped, router_logits
         )
-        final_hidden_states = self.experts(
-            hidden_states_reshaped, selected_experts, routing_weights
-        )
+        if self.use_fused_moe:
+            final_hidden_states = self.experts(
+                hidden_states_reshaped, routing_weights, selected_experts
+            )
+        else:
+            final_hidden_states = self.experts(
+                hidden_states_reshaped, selected_experts, routing_weights
+            )
         return final_hidden_states.reshape(batch_size_sequence_length, hidden_dim)
-
-
-class Qwen3MoeMLP(nn.Module):
-    def __init__(self, config, intermediate_size=None):
-        super().__init__()
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = (
-            config.intermediate_size if intermediate_size is None else intermediate_size
-        )
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        if config.hidden_act == "silu":
-            self.act_fn = nn.functional.silu
-
-    def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-        return down_proj
 
 
 class Qwen3MoeDecoderLayer(nn.Module):
@@ -446,25 +462,49 @@ class Qwen3MoeForCausalLM(nn.Module):
             model.layers.0.mlp.experts.0.gate_proj.weight：shape = torch.Size([768, 2048])
             model.layers.0.mlp.experts.0.up_proj.weight：shape = torch.Size([768, 2048])
             Qwen3 30B 是moe模型，所以不在是纯粹的mlp，而是expers mlp了
+            根据配置决定使用 FusedMoE 还是 传统的 MoE
             """
             num_experts = getattr(self.config, "num_experts", 0)
             assert num_experts > 0
+            use_fused_moe = getattr(self.config, "use_fused_moe", True)
             for expert_id in range(num_experts):
-                weight_mappings[
-                    f"{hf_prefix}.mlp.experts.{expert_id}.down_proj.weight"
-                ] = WeightMapping(
-                    target_path=f"{current_prefix}.mlp.experts.{expert_id}.down_proj.weight",
-                )
-                weight_mappings[
-                    f"{hf_prefix}.mlp.experts.{expert_id}.gate_proj.weight"
-                ] = WeightMapping(
-                    target_path=f"{current_prefix}.mlp.experts.{expert_id}.gate_proj.weight",
-                )
-                weight_mappings[
-                    f"{hf_prefix}.mlp.experts.{expert_id}.up_proj.weight"
-                ] = WeightMapping(
-                    target_path=f"{current_prefix}.mlp.experts.{expert_id}.up_proj.weight",
-                )
+                if use_fused_moe:
+                    # Loading into FusedMoE.w1 (gate & up)
+                    weight_mappings[
+                        f"{hf_prefix}.mlp.experts.{expert_id}.gate_proj.weight"
+                    ] = WeightMapping(
+                        target_path=f"{current_prefix}.mlp.experts.w1",
+                        loader_arg=expert_id * 2,
+                    )
+                    weight_mappings[
+                        f"{hf_prefix}.mlp.experts.{expert_id}.up_proj.weight"
+                    ] = WeightMapping(
+                        target_path=f"{current_prefix}.mlp.experts.w1",
+                        loader_arg=expert_id * 2 + 1,
+                    )
+                    # Loading into FusedMoE.w2 (down)
+                    weight_mappings[
+                        f"{hf_prefix}.mlp.experts.{expert_id}.down_proj.weight"
+                    ] = WeightMapping(
+                        target_path=f"{current_prefix}.mlp.experts.w2",
+                        loader_arg=expert_id,
+                    )
+                else:
+                    weight_mappings[
+                        f"{hf_prefix}.mlp.experts.{expert_id}.down_proj.weight"
+                    ] = WeightMapping(
+                        target_path=f"{current_prefix}.mlp.experts.{expert_id}.down_proj.weight",
+                    )
+                    weight_mappings[
+                        f"{hf_prefix}.mlp.experts.{expert_id}.gate_proj.weight"
+                    ] = WeightMapping(
+                        target_path=f"{current_prefix}.mlp.experts.{expert_id}.gate_proj.weight",
+                    )
+                    weight_mappings[
+                        f"{hf_prefix}.mlp.experts.{expert_id}.up_proj.weight"
+                    ] = WeightMapping(
+                        target_path=f"{current_prefix}.mlp.experts.{expert_id}.up_proj.weight",
+                    )
 
         return weight_mappings
 

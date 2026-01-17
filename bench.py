@@ -24,6 +24,8 @@ def main(args):
         enforce_eager=False,
         max_model_len=2050,
         tensor_parallel_size=args.tp,
+        use_fused_moe=args.use_fused_moe,
+        use_triton_moe=args.use_triton_moe,
     )
 
     prompt_token_ids = [
@@ -56,13 +58,14 @@ if __name__ == "__main__":
     args.add_argument(
         "--model",
         type=str,
-        
         default="/root/.cache/modelscope/hub/models/Qwen/Qwen3-8B",
     )
     args.add_argument(
         "--tp",
         type=int,
-      
         default=8,
     )
+    args.add_argument("--use_fused_moe", action="store_true")
+    args.add_argument("--use_triton_moe", action="store_true")
+    
     main(args=args.parse_args())

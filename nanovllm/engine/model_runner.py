@@ -171,6 +171,8 @@ class ModelRunner:
         torch.set_default_device("cuda")
         # 为 hf_config 注入 load_partial_layers，方便模型初始化时按需分配内存
         setattr(hf_config, "load_partial_layers", config.load_partial_layers)
+        setattr(hf_config, "use_fused_moe", config.use_fused_moe)
+        setattr(hf_config, "use_triton_moe", config.use_triton_moe)
         setattr(hf_config, "quantization", config.quantization)
         self.model = MODELS_MAPPING[hf_config.model_type](hf_config)
         # load_model(self.model, config.model)
@@ -197,12 +199,14 @@ class ModelRunner:
                 rank=self.rank,
             )
 
-        # 检测是否为 MoE 模型，目前 MoE 模型的动态路由不兼容 CUDA Graph
+        # 检测是否为 MoE 模型，目前原生 MoE 模型的动态路由不兼容 CUDA Graph
+        # 但如果开启了 Triton MoE，则支持 CUDA Graph
         is_moe = hf_config.model_type in ["qwen3_moe", "deepseek_v3"]
-        if is_moe and not self.enforce_eager:
+        if is_moe and not config.use_triton_moe and not self.enforce_eager:
             log_info(
                 "model_runner",
-                f"Model type {hf_config.model_type} detected. CUDA Graph is currently not supported for MoE, disabling it.",
+                f"Model type {hf_config.model_type} detected. Native MoE is not supported for CUDA Graph, disabling it. "
+                "Set use_triton_moe=True to enable CUDA Graph for MoE.",
                 rank=self.rank,
             )
             self.enforce_eager = True

@@ -27,6 +27,10 @@ class Config:
     # 权重加载配置
     load_partial_layers: int | None = None  # 只加载前 N 层，None 表示加载所有层
 
+    # MoE 配置
+    use_fused_moe: bool = True  # 是否使用 Fused MoE
+    use_triton_moe: bool = False  # 是否使用 Triton 版本的 Fused MoE Kernel
+
     # 量化配置
     quantization: str | None = None  # 量化方式，例如 "fp8"
 

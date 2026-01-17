@@ -76,7 +76,9 @@ def qwen_30b_moe_partial_layer_infer():
         # quantization="fp8",
         tensor_parallel_size=8,
         load_partial_layers=load_partial_layers,  # 关键参数：只加载前 2 层
-        enforce_eager=True,
+        enforce_eager=False,
+        use_fused_moe=True,
+        use_triton_moe=True,
     )
 
     print("\n模型加载完成！")
