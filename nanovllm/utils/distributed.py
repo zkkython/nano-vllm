@@ -113,6 +113,52 @@ def all_gather(tensor: torch.Tensor, dim: int = 0) -> torch.Tensor:
     return torch.cat(tensor_list, dim=dim)
 
 
+def all_to_all(
+    output_tensor_list: list[torch.Tensor], input_tensor_list: list[torch.Tensor]
+):
+    """执行all to all操作。使用 all_to_all_single 实现以确保跨后端兼容性"""
+    if not is_distributed():
+        output_tensor_list[0].copy_(input_tensor_list[0])
+        return
+
+    # 获取 split sizes
+    input_split_sizes = [t.size(0) for t in input_tensor_list]
+    output_split_sizes = [t.size(0) for t in output_tensor_list]
+    
+    # 确定数据类型和设备
+    # 即使全部为空，也要执行通信以避免死锁
+    device = input_tensor_list[0].device
+    dtype = input_tensor_list[0].dtype
+    
+    # 准备平铺的 tensor
+    # 即使 total_size 为 0，也要构造一个有效的 tensor 参与通信
+    input_tensor = torch.cat(input_tensor_list, dim=0).contiguous()
+    
+    total_output_size = sum(output_split_sizes)
+    # 获取特征维度 (H, ...)
+    other_dims = input_tensor_list[0].shape[1:]
+    output_tensor = torch.empty(
+        (total_output_size, *other_dims), 
+        device=device, 
+        dtype=dtype
+    ).contiguous()
+    
+    # 执行通信 (集体操作，所有 rank 必须参与)
+    dist.all_to_all_single(
+        output_tensor,
+        input_tensor,
+        output_split_sizes=output_split_sizes,
+        input_split_sizes=input_split_sizes
+    )
+    
+    # 将结果拷贝回 list
+    curr = 0
+    for i, size in enumerate(output_split_sizes):
+        if size > 0:
+            output_tensor_list[i].copy_(output_tensor[curr : curr + size])
+        curr += size
+
+
 def barrier():
     """同步所有进程"""
     if dist.is_available() and dist.is_initialized():

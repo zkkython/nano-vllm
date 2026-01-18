@@ -26,6 +26,9 @@ def main(args):
         tensor_parallel_size=args.tp,
         use_fused_moe=args.use_fused_moe,
         use_triton_moe=args.use_triton_moe,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        ep_size=args.ep_size,
+        enable_epmoe=args.enable_epmoe,
     )
 
     prompt_token_ids = [
@@ -67,5 +70,8 @@ if __name__ == "__main__":
     )
     args.add_argument("--use_fused_moe", action="store_true")
     args.add_argument("--use_triton_moe", action="store_true")
-    
+    args.add_argument("--gpu_memory_utilization", type=float, default=0.8)
+    args.add_argument("--ep_size", type=int, default=1)
+    args.add_argument("--enable_epmoe", action="store_true")
+
     main(args=args.parse_args())

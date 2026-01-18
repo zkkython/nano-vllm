@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import triton
 import triton.language as tl
-from typing import Optional
+import torch.distributed as dist
 
 
 @triton.jit
@@ -120,13 +120,15 @@ def fused_moe_triton(
     topk_weights: torch.Tensor,
     topk_indices: torch.Tensor,
     inplace: bool = False,
+    num_experts: int = None,
 ):
     """
     Fused MoE execution using Triton Kernel.
     Supports CUDA Graph by using fixed grid and atomic_add.
     """
     num_tokens, hidden_size = hidden_states.shape
-    num_experts, fused_intermediate, _ = w1.shape
+    num_experts_w1, fused_intermediate, _ = w1.shape
+    num_experts = num_experts or num_experts_w1
     intermediate_size = fused_intermediate // 2
     topk = topk_indices.shape[1]
 
@@ -205,6 +207,7 @@ def fused_moe(
     topk_weights: torch.Tensor,
     topk_indices: torch.Tensor,
     inplace: bool = False,
+    num_experts: int = None,
 ):
     """
     Fused MoE execution using Triton.
@@ -217,7 +220,8 @@ def fused_moe(
         topk_indices: [num_tokens, topk]
     """
     num_tokens, hidden_size = hidden_states.shape
-    num_experts, fused_intermediate, _ = w1.shape
+    num_experts_w1, fused_intermediate, _ = w1.shape
+    num_experts = num_experts or num_experts_w1
     intermediate_size = fused_intermediate // 2
     topk = topk_indices.shape[1]
 
@@ -296,18 +300,25 @@ class FusedMoE(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         use_triton: bool = False,
+        ep_size: int = 1,
     ):
         super().__init__()
         self.num_experts = num_experts
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.use_triton = use_triton
+        print(f"ep size = {ep_size}")
+        self.ep_size = ep_size
+        self.num_local_experts = num_experts // ep_size
+        self.rank = dist.get_rank() if dist.is_initialized() else 0
 
-        # Concatenated weights
+        # Concatenated weights (local experts only)
         self.w1 = nn.Parameter(
-            torch.empty(num_experts, 2 * intermediate_size, hidden_size)
+            torch.empty(self.num_local_experts, 2 * intermediate_size, hidden_size)
         )
-        self.w2 = nn.Parameter(torch.empty(num_experts, hidden_size, intermediate_size))
+        self.w2 = nn.Parameter(
+            torch.empty(self.num_local_experts, hidden_size, intermediate_size)
+        )
 
         # Attach weight loaders to parameters
         self.w1.weight_loader = self.w1_weight_loader
@@ -320,8 +331,15 @@ class FusedMoE(nn.Module):
         expert_id = loader_arg // 2
         is_up = loader_arg % 2 == 1
 
+        # Check if expert belongs to this rank
+        expert_start_idx = self.rank * self.num_local_experts
+        expert_end_idx = expert_start_idx + self.num_local_experts
+        if not (expert_start_idx <= expert_id < expert_end_idx):
+            return
+
+        local_expert_id = expert_id - expert_start_idx
         offset = self.intermediate_size if is_up else 0
-        param.data[expert_id, offset : offset + self.intermediate_size, :].copy_(
+        param.data[local_expert_id, offset : offset + self.intermediate_size, :].copy_(
             loaded_weight
         )
 
@@ -330,11 +348,31 @@ class FusedMoE(nn.Module):
     ):
         # loader_arg is expert_id
         expert_id = loader_arg
-        param.data[expert_id, :, :].copy_(loaded_weight)
+
+        # Check if expert belongs to this rank
+        expert_start_idx = self.rank * self.num_local_experts
+        expert_end_idx = expert_start_idx + self.num_local_experts
+        if not (expert_start_idx <= expert_id < expert_end_idx):
+            return
+
+        local_expert_id = expert_id - expert_start_idx
+        param.data[local_expert_id, :, :].copy_(loaded_weight)
 
     def forward(self, hidden_states, topk_weights, topk_indices):
         if self.use_triton:
             return fused_moe_triton(
-                hidden_states, self.w1, self.w2, topk_weights, topk_indices
+                hidden_states,
+                self.w1,
+                self.w2,
+                topk_weights,
+                topk_indices,
+                num_experts=self.num_local_experts,
             )
-        return fused_moe(hidden_states, self.w1, self.w2, topk_weights, topk_indices)
+        return fused_moe(
+            hidden_states,
+            self.w1,
+            self.w2,
+            topk_weights,
+            topk_indices,
+            num_experts=self.num_local_experts,
+        )

@@ -30,6 +30,8 @@ class Config:
     # MoE 配置
     use_fused_moe: bool = True  # 是否使用 Fused MoE
     use_triton_moe: bool = False  # 是否使用 Triton 版本的 Fused MoE Kernel
+    enable_epmoe: bool = False  # 是否启用 Expert Parallel MoE
+    ep_size: int = 1  # Expert Parallel 大小
 
     # 量化配置
     quantization: str | None = None  # 量化方式，例如 "fp8"
@@ -50,6 +52,11 @@ class Config:
         assert os.path.isdir(self.model)
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size
+        if self.enable_epmoe:
+            assert self.ep_size > 0, "ep_size must be positive when enable_epmoe is True"
+        else:
+            self.ep_size = 1
+
         self.hf_config = AutoConfig.from_pretrained(self.model)
         # print(f'load hf config {self.hf_config}')
         self.max_model_len = min(

@@ -17,6 +17,9 @@ def main(args):
         tensor_parallel_size=args.tp,
         use_fused_moe=args.use_fused_moe,
         use_triton_moe=args.use_triton_moe,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        ep_size=args.ep_size,
+        enable_epmoe=args.enable_epmoe,
     )
 
     sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
@@ -53,5 +56,8 @@ if __name__ == "__main__":
     args.add_argument("--use_fused_moe", action="store_true")
     args.add_argument("--use_triton_moe", action="store_true")
     args.add_argument("--enforce_eager", action="store_false")
+    args.add_argument("--gpu_memory_utilization", type=float, default=0.9)
+    args.add_argument("--ep_size", type=int, default=1)
+    args.add_argument("--enable_epmoe", action="store_true")
     args = args.parse_args()
     main(args)

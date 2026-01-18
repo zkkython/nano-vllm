@@ -15,6 +15,7 @@ from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 from nanovllm.layers.fused_moe import FusedMoE
 from nanovllm.utils.weight_loader import WeightLoader, WeightMapping
+from nanovllm.utils.distributed import all_reduce, all_to_all
 import torch.nn.functional as F
 
 
@@ -165,9 +166,15 @@ class Qwen3MoeMLP(nn.Module):
         self.intermediate_size = (
             config.intermediate_size if intermediate_size is None else intermediate_size
         )
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.gate_proj = ColumnParallelLinear(
+            self.hidden_size, self.intermediate_size, bias=False
+        )
+        self.up_proj = ColumnParallelLinear(
+            self.hidden_size, self.intermediate_size, bias=False
+        )
+        self.down_proj = RowParallelLinear(
+            self.intermediate_size, self.hidden_size, bias=False
+        )
         if config.hidden_act == "silu":
             self.act_fn = nn.functional.silu
 
@@ -195,6 +202,26 @@ class Qwen3MoeExperts(nn.ModuleList):
         top_k_index: torch.Tensor,
         top_k_weights: torch.Tensor,
     ) -> torch.Tensor:
+        final_hidden_states = torch.zeros_like(hidden_states)
+
+        counts = torch.bincount(top_k_index.flatten(), minlength=self.num_experts)
+        for i in range(self.num_experts):
+            if counts[i].item == 0:
+                continue
+            expert = self[i]
+            idx, top = torch.where(top_k_index == i)
+            final_hidden_states[idx] += (
+                expert(hidden_states[idx]) * top_k_weights[idx, top, None]
+            )
+
+        return final_hidden_states
+
+    def forward2(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Args:
             hidden_states: (batch_size * sequence_length, hidden_dim)
@@ -204,12 +231,18 @@ class Qwen3MoeExperts(nn.ModuleList):
             (batch_size * sequence_length, hidden_dim)
         """
         final_hidden_states = torch.zeros_like(hidden_states)
+        # (batch_size * sequence_length, top_k) -> (batch_size * sequence_length, top_k, self.num_experts)
+        # permute(2, 1, 0) -> (self.num_experts, top_k, batch_size * sequence_length)
         expert_mask = torch.nn.functional.one_hot(
             top_k_index, num_classes=self.num_experts
         ).permute(2, 1, 0)
 
         # 注意：.nonzero() 会触发 CPU-GPU 同步，不兼容 CUDA Graph 捕获。
         # 目前 MoE 模型在 ModelRunner 中已自动切换到 eager 模式。
+
+        # expert_mask.sum(dim=(-1, -2)): 每个专家被所有token选择了多少次,(self.num_experts, )
+        # torch.greater(expert_mask.sum(dim=(-1, -2)), 0): 选择成专家被选择次数> 0的，返回的是一个Bool值构成的(self.num_experts, )
+        # nonzero()： 返回真值的序列组成的矩阵(num_activated_experts, 1)
         expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
         for expert_idx in expert_hit:
             expert_idx = expert_idx.item()  # 获取标量值
@@ -232,43 +265,176 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         self.gate = ReplicatedLinear(config.hidden_size, config.num_experts, bias=False)
         self.use_fused_moe = getattr(config, "use_fused_moe", True)
         self.use_triton_moe = getattr(config, "use_triton_moe", False)
+        self.enable_epmoe = getattr(config, "enable_epmoe", False)
+        self.ep_size = (
+            getattr(config, "ep_size", dist.get_world_size())
+            if self.enable_epmoe
+            else 1
+        )
+        self.num_experts = config.num_experts
+        self.num_experts_per_rank = self.num_experts // self.ep_size
+        self.rank = dist.get_rank() if dist.is_initialized() else 0
+
         if self.use_fused_moe:
             self.experts = FusedMoE(
                 config.num_experts,
                 config.hidden_size,
                 config.moe_intermediate_size,
                 use_triton=self.use_triton_moe,
+                ep_size=self.ep_size,
             )
         else:
             self.experts = Qwen3MoeExperts(config)
         self.num_experts_per_tok = config.num_experts_per_tok
         self.norm_topk_prob = config.norm_topk_prob
 
-    def route_tokens_to_experts(self, hidden_states, router_logits):
+    def route_tokens_to_experts(self, router_logits):
+        # (batch_size_sequence_length, num_experts) 做相关性计算
         routing_weights = F.softmax(router_logits, dim=-1, dtype=torch.float)
+        # (batch_size_sequence_length, num_experts) 选择topk， 从所有专家里给每一个token选择topk个专家
+        # routing_weights： (batch_size_sequence_length, self.num_experts_per_tok)
+        # selected_experts: (batch_size_sequence_length, self.num_experts_per_tok)
         routing_weights, selected_experts = torch.topk(
             routing_weights, self.num_experts_per_tok, dim=-1
         )
+        # 是否做归一化
         if self.norm_topk_prob:
             routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
         routing_weights = routing_weights.to(router_logits.dtype)
         return selected_experts, routing_weights
 
-    def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size_sequence_length, hidden_dim = hidden_states.shape
-        hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
+        # hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
+        hidden_states_reshaped = hidden_states  # 不用在做reshape了，在该框架实现中本来就是两个维度(batch_size_sequence_length, hidden_dim)
+        # (batch_size_sequence_length, hidden_dim) -> (batch_size_sequence_length, num_experts)
         router_logits = self.gate(hidden_states_reshaped)
-        selected_experts, routing_weights = self.route_tokens_to_experts(
-            hidden_states_reshaped, router_logits
-        )
-        if self.use_fused_moe:
-            final_hidden_states = self.experts(
-                hidden_states_reshaped, routing_weights, selected_experts
+        selected_experts, routing_weights = self.route_tokens_to_experts(router_logits)
+
+        if self.enable_epmoe and self.ep_size > 1:
+            # Expert Parallel Implementation
+            # 1. Dispatch tokens to ranks
+            num_tokens = hidden_states_reshaped.shape[0]
+
+            # Flatten to [num_tokens * topk, hidden_dim]
+            flat_indices = selected_experts.flatten()
+            flat_weights = routing_weights.flatten()
+            flat_tokens = (
+                hidden_states_reshaped.unsqueeze(1)
+                .expand(-1, self.num_experts_per_tok, -1)
+                .reshape(-1, hidden_dim)
             )
+
+            # Determine target rank and local expert ID
+            target_ranks = flat_indices // self.num_experts_per_rank
+            local_expert_indices = flat_indices % self.num_experts_per_rank
+
+            # Prepare for all_to_all: exchange counts first
+            send_counts = torch.bincount(target_ranks, minlength=self.ep_size)
+            recv_counts = torch.zeros_like(send_counts)
+            dist.all_to_all_single(recv_counts, send_counts)
+
+            send_counts_list = send_counts.tolist()
+            recv_counts_list = recv_counts.tolist()
+
+            # Sort tokens by target rank for efficient splitting
+            sort_idx = torch.argsort(target_ranks)
+            flat_tokens_sorted = flat_tokens[sort_idx]
+            flat_weights_sorted = flat_weights[sort_idx]
+            local_expert_indices_sorted = local_expert_indices[sort_idx]
+
+            # Record original token indices for scattering back
+            original_token_indices = (
+                torch.arange(num_tokens, device=hidden_states.device)
+                .unsqueeze(1)
+                .expand(-1, self.num_experts_per_tok)
+                .flatten()
+            )
+            original_token_indices_sorted = original_token_indices[sort_idx]
+
+            # Split data into lists per destination rank
+            tokens_to_send = list(flat_tokens_sorted.split(send_counts_list))
+            weights_to_send = list(flat_weights_sorted.split(send_counts_list))
+            indices_to_send = list(local_expert_indices_sorted.split(send_counts_list))
+            orig_indices_to_send = list(
+                original_token_indices_sorted.split(send_counts_list)
+            )
+
+            # Buffers for received data
+            tokens_recv = [
+                torch.empty(
+                    c,
+                    hidden_dim,
+                    device=hidden_states.device,
+                    dtype=hidden_states.dtype,
+                )
+                for c in recv_counts_list
+            ]
+            weights_recv = [
+                torch.empty(c, device=hidden_states.device, dtype=flat_weights.dtype)
+                for c in recv_counts_list
+            ]
+            indices_recv = [
+                torch.empty(c, device=hidden_states.device, dtype=torch.long)
+                for c in recv_counts_list
+            ]
+
+            # Perform shuffle (Dispatch)
+            all_to_all(tokens_recv, tokens_to_send)
+            all_to_all(weights_recv, weights_to_send)
+            all_to_all(indices_recv, indices_to_send)
+
+            # Free send buffers early
+            del tokens_to_send, weights_to_send, indices_to_send, flat_tokens_sorted
+
+            # Process locally using local experts
+            tokens_recv_flat = torch.cat(tokens_recv)
+            weights_recv_flat = torch.cat(weights_recv)
+            indices_recv_flat = torch.cat(indices_recv)
+
+            # Record received metadata (where each token came from) to reassemble
+            # Actually we already have original_token_indices_sorted but it's on the SENDER side.
+            # We need to know which tokens we RECEIVED from which rank.
+            # No, we just need to send them BACK to the same ranks.
+
+            local_output = self.experts(
+                tokens_recv_flat,
+                weights_recv_flat.unsqueeze(1),
+                indices_recv_flat.unsqueeze(1),
+            )
+
+            # Shuffle back (Combine)
+            output_to_send = list(local_output.split(recv_counts_list))
+            output_recv = [
+                torch.empty(
+                    c,
+                    hidden_dim,
+                    device=hidden_states.device,
+                    dtype=hidden_states.dtype,
+                )
+                for c in send_counts_list
+            ]
+
+            all_to_all(output_recv, output_to_send)
+
+            output_recv_flat = torch.cat(output_recv)
+
+            # Reassemble into original hidden states
+            final_hidden_states = torch.zeros_like(hidden_states_reshaped)
+            # Use original_token_indices_sorted to put tokens back where they belong
+            final_hidden_states.index_add_(
+                0, original_token_indices_sorted, output_recv_flat
+            )
+
         else:
-            final_hidden_states = self.experts(
-                hidden_states_reshaped, selected_experts, routing_weights
-            )
+            if self.use_fused_moe:
+                final_hidden_states = self.experts(
+                    hidden_states_reshaped, routing_weights, selected_experts
+                )
+            else:
+                final_hidden_states = self.experts(
+                    hidden_states_reshaped, selected_experts, routing_weights
+                )
         return final_hidden_states.reshape(batch_size_sequence_length, hidden_dim)
 
 
@@ -494,16 +660,19 @@ class Qwen3MoeForCausalLM(nn.Module):
                         f"{hf_prefix}.mlp.experts.{expert_id}.down_proj.weight"
                     ] = WeightMapping(
                         target_path=f"{current_prefix}.mlp.experts.{expert_id}.down_proj.weight",
+                        dist_strategy="row",
                     )
                     weight_mappings[
                         f"{hf_prefix}.mlp.experts.{expert_id}.gate_proj.weight"
                     ] = WeightMapping(
                         target_path=f"{current_prefix}.mlp.experts.{expert_id}.gate_proj.weight",
+                        dist_strategy="col",
                     )
                     weight_mappings[
                         f"{hf_prefix}.mlp.experts.{expert_id}.up_proj.weight"
                     ] = WeightMapping(
                         target_path=f"{current_prefix}.mlp.experts.{expert_id}.up_proj.weight",
+                        dist_strategy="row",
                     )
 
         return weight_mappings

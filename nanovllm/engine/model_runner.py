@@ -8,11 +8,7 @@ from nanovllm.engine.sequence import Sequence
 from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.models.models_mapping import MODELS_MAPPING
-from nanovllm.log_config import (
-    log_debug,
-    log_info,
-    log_warning,
-)
+from nanovllm.log_config import log_debug, log_info, log_warning, log_error
 
 
 class ModelRunner:
@@ -169,11 +165,8 @@ class ModelRunner:
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
-        # 为 hf_config 注入 load_partial_layers，方便模型初始化时按需分配内存
-        setattr(hf_config, "load_partial_layers", config.load_partial_layers)
-        setattr(hf_config, "use_fused_moe", config.use_fused_moe)
-        setattr(hf_config, "use_triton_moe", config.use_triton_moe)
-        setattr(hf_config, "quantization", config.quantization)
+        self._update(hf_config, config=config)
+
         self.model = MODELS_MAPPING[hf_config.model_type](hf_config)
         # load_model(self.model, config.model)
         self.model.load_weights(
@@ -201,15 +194,26 @@ class ModelRunner:
 
         # 检测是否为 MoE 模型，目前原生 MoE 模型的动态路由不兼容 CUDA Graph
         # 但如果开启了 Triton MoE，则支持 CUDA Graph
+        # 注意：开启 EP (enable_epmoe=True) 时，即使使用了 Triton 也不支持 CUDA Graph
         is_moe = hf_config.model_type in ["qwen3_moe", "deepseek_v3"]
-        if is_moe and not config.use_triton_moe and not self.enforce_eager:
-            log_info(
-                "model_runner",
-                f"Model type {hf_config.model_type} detected. Native MoE is not supported for CUDA Graph, disabling it. "
-                "Set use_triton_moe=True to enable CUDA Graph for MoE.",
-                rank=self.rank,
-            )
-            self.enforce_eager = True
+        if is_moe and not self.enforce_eager:
+            enable_epmoe = getattr(hf_config, "enable_epmoe", False)
+            if enable_epmoe:
+                log_info(
+                    "model_runner",
+                    f"Model type {hf_config.model_type} with EP (ep_size={getattr(hf_config, 'ep_size', 1)}) detected. "
+                    "CUDA Graph is not supported for EP MoE, disabling it.",
+                    rank=self.rank,
+                )
+                self.enforce_eager = True
+            elif not config.use_triton_moe:
+                log_info(
+                    "model_runner",
+                    f"Model type {hf_config.model_type} detected. Native MoE is not supported for CUDA Graph, disabling it. "
+                    "Set use_triton_moe=True to enable CUDA Graph for MoE.",
+                    rank=self.rank,
+                )
+                self.enforce_eager = True
 
         if not self.enforce_eager:
             self.capture_cudagraph()
@@ -226,6 +230,15 @@ class ModelRunner:
             if rank != 0:
                 # 非主rank进入循环处理来自主rank的请求
                 self.loop()
+
+    def _update(self, hf_config, config):
+        # 为 hf_config 注入 load_partial_layers，方便模型初始化时按需分配内存
+        setattr(hf_config, "load_partial_layers", config.load_partial_layers)
+        setattr(hf_config, "use_fused_moe", config.use_fused_moe)
+        setattr(hf_config, "use_triton_moe", config.use_triton_moe)
+        setattr(hf_config, "enable_epmoe", config.enable_epmoe)
+        setattr(hf_config, "ep_size", config.ep_size)
+        setattr(hf_config, "quantization", config.quantization)
 
     def exit(self):
         """退出并清理资源"""
@@ -317,7 +330,6 @@ class ModelRunner:
 
     def warmup_model(self):
         """模型预热，已适配 Chunked Prefill"""
-        from nanovllm.log_config import log_info, log_debug
 
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
@@ -453,7 +465,6 @@ class ModelRunner:
         return block_tables
 
     def prepare_prefill(self, seqs: list[Sequence]):
-        from nanovllm.log_config import log_debug
 
         input_ids = []
         positions = []
@@ -505,7 +516,6 @@ class ModelRunner:
 
                     # 确保 block_idx 在有效范围内
                     if block_idx >= len(seq.block_table):
-                        from nanovllm.log_config import log_error
 
                         log_error(
                             "chunked_prefill",
