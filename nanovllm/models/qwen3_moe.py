@@ -1,3 +1,4 @@
+from gc import enable
 import torch
 from torch import nn
 import torch.distributed as dist
@@ -166,15 +167,27 @@ class Qwen3MoeMLP(nn.Module):
         self.intermediate_size = (
             config.intermediate_size if intermediate_size is None else intermediate_size
         )
-        self.gate_proj = ColumnParallelLinear(
-            self.hidden_size, self.intermediate_size, bias=False
-        )
-        self.up_proj = ColumnParallelLinear(
-            self.hidden_size, self.intermediate_size, bias=False
-        )
-        self.down_proj = RowParallelLinear(
-            self.intermediate_size, self.hidden_size, bias=False
-        )
+        enable_epmoe = getattr(config, "enable_epmoe", False)
+        if enable_epmoe:
+            self.gate_proj = ReplicatedLinear(
+                self.hidden_size, self.intermediate_size, bias=False
+            )
+            self.up_proj = ReplicatedLinear(
+                self.hidden_size, self.intermediate_size, bias=False
+            )
+            self.down_proj = ReplicatedLinear(
+                self.intermediate_size, self.hidden_size, bias=False
+            )
+        else:
+            self.gate_proj = ColumnParallelLinear(
+                self.hidden_size, self.intermediate_size, bias=False
+            )
+            self.up_proj = ColumnParallelLinear(
+                self.hidden_size, self.intermediate_size, bias=False
+            )
+            self.down_proj = RowParallelLinear(
+                self.intermediate_size, self.hidden_size, bias=False
+            )
         if config.hidden_act == "silu":
             self.act_fn = nn.functional.silu
 
@@ -191,22 +204,37 @@ class Qwen3MoeExperts(nn.ModuleList):
     def __init__(self, config: Qwen3MoeConfig):
         super().__init__()
         self.num_experts = config.num_experts
-        for _ in range(self.num_experts):
-            self.append(
-                Qwen3MoeMLP(config, intermediate_size=config.moe_intermediate_size)
-            )
+        self.enable_epmoe = getattr(config, "enable_epmoe", False)
+        self.ep_size = (
+            getattr(config, "ep_size", dist.get_world_size())
+            if self.enable_epmoe
+            else 1
+        )
+        if self.enable_epmoe:
+            assert self.num_experts % self.ep_size == 0
+            self.local_num_experts = self.num_experts // self.ep_size
+            for _ in range(self.local_num_experts):
+                self.append(
+                    Qwen3MoeMLP(config, intermediate_size=config.moe_intermediate_size)
+                )
+        else:
+            for _ in range(self.num_experts):
+                self.append(
+                    Qwen3MoeMLP(config, intermediate_size=config.moe_intermediate_size)
+                )
 
     def forward(
         self,
         hidden_states: torch.Tensor,
-        top_k_index: torch.Tensor,
         top_k_weights: torch.Tensor,
+        top_k_index: torch.Tensor,
     ) -> torch.Tensor:
         final_hidden_states = torch.zeros_like(hidden_states)
 
         counts = torch.bincount(top_k_index.flatten(), minlength=self.num_experts)
-        for i in range(self.num_experts):
-            if counts[i].item == 0:
+        rangcnt = self.local_num_experts if self.enable_epmoe else self.num_experts
+        for i in range(rangcnt):
+            if counts[i].item() == 0:
                 continue
             expert = self[i]
             idx, top = torch.where(top_k_index == i)
@@ -219,8 +247,8 @@ class Qwen3MoeExperts(nn.ModuleList):
     def forward2(
         self,
         hidden_states: torch.Tensor,
-        top_k_index: torch.Tensor,
         top_k_weights: torch.Tensor,
+        top_k_index: torch.Tensor,
     ) -> torch.Tensor:
         """
         Args:
@@ -233,8 +261,10 @@ class Qwen3MoeExperts(nn.ModuleList):
         final_hidden_states = torch.zeros_like(hidden_states)
         # (batch_size * sequence_length, top_k) -> (batch_size * sequence_length, top_k, self.num_experts)
         # permute(2, 1, 0) -> (self.num_experts, top_k, batch_size * sequence_length)
+        rangcnt = self.local_num_experts if self.enable_epmoe else self.num_experts
+
         expert_mask = torch.nn.functional.one_hot(
-            top_k_index, num_classes=self.num_experts
+            top_k_index, num_classes=rangcnt
         ).permute(2, 1, 0)
 
         # 注意：.nonzero() 会触发 CPU-GPU 同步，不兼容 CUDA Graph 捕获。
@@ -433,7 +463,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
                 )
             else:
                 final_hidden_states = self.experts(
-                    hidden_states_reshaped, selected_experts, routing_weights
+                    hidden_states_reshaped, routing_weights, selected_experts
                 )
         return final_hidden_states.reshape(batch_size_sequence_length, hidden_dim)
 
@@ -633,6 +663,12 @@ class Qwen3MoeForCausalLM(nn.Module):
             num_experts = getattr(self.config, "num_experts", 0)
             assert num_experts > 0
             use_fused_moe = getattr(self.config, "use_fused_moe", True)
+            ep_size = getattr(self.config, "ep_size", 1)
+            num_local_experts = num_experts // ep_size
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            expert_start_idx = rank * num_local_experts
+            expert_end_idx = expert_start_idx + num_local_experts
+            enable_epmoe = getattr(self.config, "enable_epmoe", False)
             for expert_id in range(num_experts):
                 if use_fused_moe:
                     # Loading into FusedMoE.w1 (gate & up)
@@ -656,24 +692,36 @@ class Qwen3MoeForCausalLM(nn.Module):
                         loader_arg=expert_id,
                     )
                 else:
-                    weight_mappings[
-                        f"{hf_prefix}.mlp.experts.{expert_id}.down_proj.weight"
-                    ] = WeightMapping(
-                        target_path=f"{current_prefix}.mlp.experts.{expert_id}.down_proj.weight",
-                        dist_strategy="row",
-                    )
-                    weight_mappings[
-                        f"{hf_prefix}.mlp.experts.{expert_id}.gate_proj.weight"
-                    ] = WeightMapping(
-                        target_path=f"{current_prefix}.mlp.experts.{expert_id}.gate_proj.weight",
-                        dist_strategy="col",
-                    )
-                    weight_mappings[
-                        f"{hf_prefix}.mlp.experts.{expert_id}.up_proj.weight"
-                    ] = WeightMapping(
-                        target_path=f"{current_prefix}.mlp.experts.{expert_id}.up_proj.weight",
-                        dist_strategy="row",
-                    )
+                    if enable_epmoe:
+                        if expert_start_idx <= expert_id < expert_end_idx:
+                            local_id = expert_id - expert_start_idx
+                            for proj in ["gate_proj", "up_proj", "down_proj"]:
+                                hf_key = (
+                                    f"{hf_prefix}.mlp.experts.{expert_id}.{proj}.weight"
+                                )
+                                target_key = f"{current_prefix}.mlp.experts.{local_id}.{proj}.weight"
+                                weight_mappings[hf_key] = WeightMapping(
+                                    target_path=target_key
+                                )
+                    else:
+                        weight_mappings[
+                            f"{hf_prefix}.mlp.experts.{expert_id}.down_proj.weight"
+                        ] = WeightMapping(
+                            target_path=f"{current_prefix}.mlp.experts.{expert_id}.down_proj.weight",
+                            dist_strategy="row",
+                        )
+                        weight_mappings[
+                            f"{hf_prefix}.mlp.experts.{expert_id}.gate_proj.weight"
+                        ] = WeightMapping(
+                            target_path=f"{current_prefix}.mlp.experts.{expert_id}.gate_proj.weight",
+                            dist_strategy="col",
+                        )
+                        weight_mappings[
+                            f"{hf_prefix}.mlp.experts.{expert_id}.up_proj.weight"
+                        ] = WeightMapping(
+                            target_path=f"{current_prefix}.mlp.experts.{expert_id}.up_proj.weight",
+                            dist_strategy="row",
+                        )
 
         return weight_mappings
 

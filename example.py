@@ -56,7 +56,7 @@ if __name__ == "__main__":
     args.add_argument("--use_fused_moe", action="store_true")
     args.add_argument("--use_triton_moe", action="store_true")
     args.add_argument("--enforce_eager", action="store_false")
-    args.add_argument("--gpu_memory_utilization", type=float, default=0.9)
+    args.add_argument("--gpu_memory_utilization", type=float, default=0.8)
     args.add_argument("--ep_size", type=int, default=1)
     args.add_argument("--enable_epmoe", action="store_true")
     args = args.parse_args()
