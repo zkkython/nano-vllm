@@ -141,8 +141,23 @@ def fp8_gemm_kernel(
 
     for i in range(k_steps):
         k_curr = i * BLOCK_SIZE_K
-        a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k_curr, other=0.0)
-        b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k_curr, other=0.0)
+        a = tl.load(
+            a_ptrs,
+            mask=(offs_m[:, None] < M) & (offs_k[None, :] < K - k_curr),
+            other=0.0,
+        )
+        if B_PROJ:
+            b = tl.load(
+                b_ptrs,
+                mask=(offs_k[:, None] < K - k_curr) & (offs_n[None, :] < N),
+                other=0.0,
+            )
+        else:
+            b = tl.load(
+                b_ptrs,
+                mask=(offs_k[:, None] < K - k_curr) & (offs_n[None, :] < N),
+                other=0.0,
+            )
 
         # Load scales
         i_block = k_curr // GRAIN

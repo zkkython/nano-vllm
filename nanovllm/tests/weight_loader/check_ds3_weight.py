@@ -99,7 +99,7 @@ def deepseek_v3_partial_layer_infer():
     prompt = "你好"
     print(f"输入: {prompt}")
 
-    outputs = llm.generate([prompt], SamplingParams(temperature=0.0, max_tokens=5))
+    outputs = llm.generate([prompt], SamplingParams(temperature=0.6, max_tokens=50))
     print(f"输出: {outputs[0]['text']}")
     print("\n说明：由于只加载了 2 层，输出通常是无意义的，但可以验证：")
     print("  - 权重加载流程是否正确")

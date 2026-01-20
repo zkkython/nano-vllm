@@ -27,7 +27,7 @@ DeepSeek-V3 是一个拥有 671B 参数的巨型模型，为了在有限的显�
 *   **Forward 路由**：在 `forward` 方法中检测 `weight_scale`。如果存在，则自动切换到 `linear_fp8` 执行路径。
 
 ### 2.3 权重加载器 (`nanovllm/utils/weight_loader.py` & `models/deepseek_v3_weight_mapping.py`)
-*   **系数转换**：DeepSeek-V3 权重文件中存储的是 `scale_inv`。在 `weight_scale_loader` 中实现了 `1.0 / loaded_weight` 的转换逻辑，将其变为推理算子所需的乘法系数。
+*   **系数转换**：DeepSeek-V3 权重文件中存储的是 `scale_inv`。在 `weight_scale_loader` 中直接加载这些系数作为乘法系数使用（注意：DeepSeek-V3 的 `scale_inv` 在推理时通常就是作为 dequantization 的乘数）。
 *   **并行切分**：确保 `weight_scale` 在 Tensor Parallel 场景下能像 `weight` 一样正确切分（Shard）。
 
 ### 2.4 模型配置与结构 (`nanovllm/models/deepseek_v3.py`)
@@ -65,7 +65,7 @@ Triton 算子要求输入张量在内存中连续。虽然 `act_quant` 内部已
 
 ### 4.2 数据类型对齐
 *   **FlashAttention 限制**：FlashAttention 仅支持 `fp16` 和 `bf16`。FP8 线性层的输出必须转换为其中一种精度（通常为 `bf16`）后再进入 Attention 层。
-*   **Scale 转换**：注意原始权重中的 `scale_inv` 是除数，加载后必须转为倒数作为乘数使用。
+*   **Scale 加载**：确保原始权重中的 `scale_inv` 正确加载为乘数。
 
 ### 4.3 显存占用
 在 FP8 模式下，参数部分的显存占用将下降至原来的 1/4（相比 FP32）或 1/2（相比 BF16）。但在初始化阶段，PyTorch 可能会因临时张量产生峰值占用，建议配合 `load_partial_layers` 进行调试。

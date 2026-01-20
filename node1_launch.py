@@ -10,6 +10,8 @@ import time
 from nanovllm import LLM
 from nanovllm.sampling_params import SamplingParams
 
+model_path = "/data/ds-671"
+
 
 def main():
     # 从环境变量获取分布式信息（由torchrun自动设置）
@@ -37,7 +39,12 @@ def main():
         print(f"[Node1] Rank 0 initializing LLM...")
         # 初始化LLM
         llm = LLM(
-            model="/data/Qwen3-8B/Qwen3-8B",
+            model_path,
+            max_model_len=2000,
+            max_num_batched_tokens=2000,
+            max_num_seqs=1,
+            gpu_memory_utilization=0.88,
+            enforce_eager=True,
             tensor_parallel_size=world_size,
             master_addr=master_addr,
             master_port=master_port,

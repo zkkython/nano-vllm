@@ -87,7 +87,7 @@ class ReplicatedLinear(LinearBase):
         param.data.copy_(loaded_weight)
 
     def weight_scale_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
-        param.data.copy_(1.0 / loaded_weight)
+        param.data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # print(f"[FP8_EXEC] Running Triton FP8 Kernel for {self.weight_scale.shape}")
@@ -181,7 +181,7 @@ class ColumnParallelLinear(LinearBase):
         shard_size = param_data.size(self.tp_dim)
         start_idx = self.tp_rank * shard_size
         loaded_weight = loaded_weight.narrow(self.tp_dim, start_idx, shard_size)
-        param_data.copy_(1.0 / loaded_weight)
+        param_data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # print(
@@ -368,7 +368,7 @@ class RowParallelLinear(LinearBase):
         shard_size = param_data.size(self.tp_dim)
         start_idx = self.tp_rank * shard_size
         loaded_weight = loaded_weight.narrow(self.tp_dim, start_idx, shard_size)
-        param_data.copy_(1.0 / loaded_weight)
+        param_data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.weight_scale is not None:
