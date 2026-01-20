@@ -53,7 +53,9 @@ class Config:
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size
         if self.enable_epmoe:
-            assert self.ep_size > 0, "ep_size must be positive when enable_epmoe is True"
+            assert (
+                self.ep_size > 0
+            ), "ep_size must be positive when enable_epmoe is True"
         else:
             self.ep_size = 1
 

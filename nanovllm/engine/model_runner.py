@@ -163,7 +163,7 @@ class ModelRunner:
 
         # CUDA设备已经在上面设置好了，这里不需要重复设置
         default_dtype = torch.get_default_dtype()
-        torch.set_default_dtype(hf_config.torch_dtype)
+        torch.set_default_dtype(hf_config.dtype)
         torch.set_default_device("cuda")
         self._update(hf_config, config=config)
 
@@ -430,11 +430,14 @@ class ModelRunner:
             * self.block_size
             * num_kv_heads
             * head_dim
-            * hf_config.torch_dtype.itemsize
+            * hf_config.dtype.itemsize
         )
         config.num_kvcache_blocks = (
             int(total * config.gpu_memory_utilization - used - peak + current)
             // block_bytes
+        )
+        print(
+            f"block_bytes: {block_bytes}, free mem: {int(total * config.gpu_memory_utilization - used - peak + current)}, num_kvcache_blocks: {config.num_kvcache_blocks}"
         )
         assert config.num_kvcache_blocks > 0
         self.kv_cache = torch.zeros(

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import os
+import re
 from glob import glob
 import logging
 
@@ -243,16 +244,19 @@ class WeightLoader:
                             needed_keys.append(name)
                             continue
 
+                        if self._is_other_rank_expert(name):
+                            continue
+
                         if not self._is_excluded_layer_weight(name):
                             needed_keys.append(name)
 
                     if not needed_keys:
                         skipped_files += 1
-                        logger.debug(
-                            "Skipping %s: 0/%s weights needed",
-                            filename,
-                            len(f.keys()),
-                        )
+                        # logger.debug(
+                        #     "Skipping %s: 0/%s weights needed",
+                        #     filename,
+                        #     len(f.keys()),
+                        # )
                         continue
 
                     logger.debug(
@@ -311,6 +315,38 @@ class WeightLoader:
 
         return is_excluded
 
+    def _is_other_rank_expert(self, hf_key: str) -> bool:
+        """检查是否是其他 rank 的专家权重.
+
+        在 EP (Expert Parallel) 模式下，当前 rank 只包含部分专家。
+        权重文件中包含所有专家，我们需要跳过不属于当前 rank 的专家。
+        """
+        if ".experts." not in hf_key:
+            return False
+
+        match = re.search(r"\.experts\.(\d+)\.", hf_key)
+        if not match:
+            return False
+
+        expert_id = int(match.group(1))
+
+        if not hasattr(self, "_local_expert_ids"):
+            self._local_expert_ids = set()
+            for name, _ in self.model.named_parameters():
+                m = re.search(r"\.experts\.(\d+)\.", name)
+                if m:
+                    self._local_expert_ids.add(int(m.group(1)))
+
+        if self._local_expert_ids and expert_id not in self._local_expert_ids:
+            if not hasattr(self, "_logged_ep_skip"):
+                logger.info(
+                    "Expert Parallelism detected: skipping experts not assigned to this rank."
+                )
+                self._logged_ep_skip = True
+            return True
+
+        return False
+
     def _extract_layer_num(self, hf_key: str) -> int | None:
         """从权重 key 中提取层号.
 
@@ -356,6 +392,9 @@ class WeightLoader:
         for st_file in weights_files:
             with safe_open(st_file, "pt", "cpu") as f:
                 for name in f.keys():  # noqa: SIM118
+                    if self._is_other_rank_expert(name):
+                        continue
+
                     if self._is_excluded_layer_weight(name):
                         layer_num = self._extract_layer_num(name)
                         if layer_num is not None:

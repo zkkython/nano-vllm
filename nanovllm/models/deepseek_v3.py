@@ -440,16 +440,24 @@ class DeepSeekV3MoE(nn.Module):
         self.gate = DeepSeekV3Gate(config)
 
         # Routed experts (only instantiate local experts)
-        self.experts = nn.ModuleList(
-            [
-                (
-                    DeepSeekV3Expert(config)
-                    if self.expert_start_idx <= i < self.expert_end_idx
-                    else None
-                )
-                for i in range(self.n_routed_experts)
-            ]
-        )
+        self.experts = nn.ModuleDict()
+        for i in range(self.n_local_experts):
+            expert_id = self.expert_start_idx + i
+            self.experts[str(expert_id)] = DeepSeekV3Expert(config)
+        # self.experts = nn.ModuleList(
+        #     [
+        #         # (
+        #         #     DeepSeekV3Expert(config)
+        #         #     if self.expert_start_idx <= i < self.expert_end_idx
+        #         #     else None
+        #         # )
+        #         # for i in range(self.n_routed_experts)
+        #         (
+        #             DeepSeekV3Expert(config)
+        #             for _ in range(self.expert_start_idx, self.expert_end_idx)
+        #         )
+        #     ]
+        # )
 
         # Shared experts
         if config.n_shared_experts > 0:
@@ -475,11 +483,12 @@ class DeepSeekV3MoE(nn.Module):
             indices.flatten(), minlength=self.n_routed_experts
         ).tolist()
 
-        for i in range(self.expert_start_idx, self.expert_end_idx):
-            if counts[i] == 0:
+        for i in range(self.n_local_experts):
+            global_id = self.expert_start_idx + i
+            if counts[global_id] == 0:
                 continue
-            expert = self.experts[i]
-            idx, top = torch.where(indices == i)
+            expert = self.experts[str(global_id)]
+            idx, top = torch.where(indices == global_id)
             y[idx] += expert(x[idx]) * weights[idx, top, None]
 
         # Shared experts
@@ -643,11 +652,21 @@ class DeepSeekV3ForCausalLM(nn.Module):
             q_lora_rank=config.q_lora_rank,
             n_shared_experts=config.n_shared_experts,
         )
+        tp_size = dist.get_world_size()
+        assert config.n_routed_experts % tp_size == 0
 
+        self.n_routed_experts = config.n_routed_experts
+        self.n_local_experts = config.n_routed_experts // tp_size
+
+        # Expert partitioning across TP ranks
+        tp_rank = dist.get_rank()
+        expert_start_idx = tp_rank * self.n_local_experts
+        expert_end_idx = expert_start_idx + self.n_local_experts
         # 添加专家权重映射
         expert_mappings = build_deepseek_v3_expert_mappings(
             num_hidden_layers=config.num_hidden_layers,
-            n_routed_experts=config.n_routed_experts,
+            router_expert_start_idx=expert_start_idx,
+            router_expert_end_idx=expert_end_idx,
         )
         weight_mappings.update(expert_mappings)
 

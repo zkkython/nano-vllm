@@ -124,33 +124,31 @@ def all_to_all(
     # 获取 split sizes
     input_split_sizes = [t.size(0) for t in input_tensor_list]
     output_split_sizes = [t.size(0) for t in output_tensor_list]
-    
+
     # 确定数据类型和设备
     # 即使全部为空，也要执行通信以避免死锁
     device = input_tensor_list[0].device
     dtype = input_tensor_list[0].dtype
-    
+
     # 准备平铺的 tensor
     # 即使 total_size 为 0，也要构造一个有效的 tensor 参与通信
     input_tensor = torch.cat(input_tensor_list, dim=0).contiguous()
-    
+
     total_output_size = sum(output_split_sizes)
     # 获取特征维度 (H, ...)
     other_dims = input_tensor_list[0].shape[1:]
     output_tensor = torch.empty(
-        (total_output_size, *other_dims), 
-        device=device, 
-        dtype=dtype
+        (total_output_size, *other_dims), device=device, dtype=dtype
     ).contiguous()
-    
+
     # 执行通信 (集体操作，所有 rank 必须参与)
     dist.all_to_all_single(
         output_tensor,
         input_tensor,
         output_split_sizes=output_split_sizes,
-        input_split_sizes=input_split_sizes
+        input_split_sizes=input_split_sizes,
     )
-    
+
     # 将结果拷贝回 list
     curr = 0
     for i, size in enumerate(output_split_sizes):

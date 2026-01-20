@@ -71,7 +71,7 @@ def check():
 
 
 def deepseek_v3_partial_layer_infer():
-    torch.set_default_dtype(torch.bfloat16)
+    # torch.set_default_dtype(torch.bfloat16)
 
     """示例：只加载前 2 层进行快速验证"""
     print("=" * 70)
@@ -82,12 +82,13 @@ def deepseek_v3_partial_layer_infer():
     # 这样可以大幅减少初始化时间和显存占用
     llm = LLM(
         model_path,
-        max_num_batched_tokens=5000,
-        max_num_seqs=4,
-        gpu_memory_utilization=0.8,
-        # quantization="fp8",
+        max_model_len=2000,
+        max_num_batched_tokens=2000,
+        max_num_seqs=1,
+        gpu_memory_utilization=0.88,
+        quantization="fp8",
         tensor_parallel_size=8,
-        load_partial_layers=4,  # 关键参数：只加载前 2 层
+        # load_partial_layers=61,  # 关键参数：只加载前 2 层
         enforce_eager=True,
     )
 

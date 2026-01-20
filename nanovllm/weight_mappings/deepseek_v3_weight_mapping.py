@@ -13,6 +13,7 @@ DeepSeek-V3 使用 MLA (Multi-head Latent Attention) 和 MoE (Mixture of Experts
 """
 
 from nanovllm.utils.weight_loader import WeightMapping
+import torch.distributed as dist
 
 
 def build_deepseek_v3_weight_mappings(
@@ -210,7 +211,9 @@ def build_deepseek_v3_weight_mappings(
 
 
 def build_deepseek_v3_expert_mappings(
-    num_hidden_layers: int, n_routed_experts: int
+    num_hidden_layers: int,
+    router_expert_start_idx: int,
+    router_expert_end_idx: int,
 ) -> dict[str, WeightMapping]:
     """构建 DeepSeek-V3 MoE 专家的权重映射规则.
 
@@ -225,11 +228,21 @@ def build_deepseek_v3_expert_mappings(
         专家权重映射字典
     """
     expert_mappings: dict[str, WeightMapping] = {}
-
-    for layer_id in range(1, num_hidden_layers):  # 从第 1 层开始（第 0 层是 MLP）
+    print(
+        f"Rank: {dist.get_rank()}, router_expert_start_idx = {router_expert_start_idx}, router_expert_end_idx = {router_expert_end_idx}"
+    )
+    for layer_id in range(3, num_hidden_layers):  # 从第 3 层开始（第 0，1，2 层是 MLP）
+        """
+        model.layers.37.mlp.experts.24.down_proj.weight：shape = torch.Size([7168, 2048])
+        model.layers.37.mlp.experts.24.down_proj.weight_scale_inv：shape = torch.Size([56, 16])
+        model.layers.37.mlp.experts.24.gate_proj.weight：shape = torch.Size([2048, 7168])
+        model.layers.37.mlp.experts.24.gate_proj.weight_scale_inv：shape = torch.Size([16, 56])
+        model.layers.37.mlp.experts.24.up_proj.weight：shape = torch.Size([2048, 7168])
+        model.layers.37.mlp.experts.24.up_proj.weight_scale_inv：shape = torch.Size([16, 56])
+        """
         prefix = f"model.layers.{layer_id}"
-
-        for expert_id in range(n_routed_experts):
+        # 专家并行的时候加载的时候是按照专家切
+        for expert_id in range(router_expert_start_idx, router_expert_end_idx):
             expert_prefix = f"{prefix}.mlp.experts.{expert_id}"
 
             expert_mappings[f"{expert_prefix}.gate_proj.weight"] = WeightMapping(
