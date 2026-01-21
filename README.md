@@ -11,7 +11,7 @@ Nano-vLLM 遵循模块化设计，核心组件包括：
 - **BlockManager**: 负责 PagedAttention 的内存管理，将 KV Cache 划分为物理块进行高效复用。
 - **ModelRunner**: 封装了模型的前向计算逻辑，支持 CUDA Graph 加速和分布式并行。
 - **KVTransferAgent**: 负责分布式节点间的 KV Cache 传输，支持 Prefill 和 Decode 节点分离部署。
-- **Parallel Strategies**: 集成 TP, PP, EP 等多种并行策略，支持超大规模模型分布式推理。
+- **Parallel Strategies**: 集成 TP, EP 等多种并行策略，支持超大规模模型分布式推理。
 - **Layer-based Models**: 模型实现高度复用基础算子库（Layers），支持快速接入新模型。
 
 ```mermaid
