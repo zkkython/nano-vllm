@@ -73,11 +73,16 @@ class ModelRunner:
             torch.cuda.set_device(actual_local_rank)
             # 保存实际使用的设备ID，供后续使用
             self.actual_device_id = actual_local_rank
+            print(
+                f"[DEBUG] Rank {rank}: Set CUDA device to {actual_local_rank}",
+                flush=True,
+            )
             log_debug(
                 "model_runner",
                 f"Rank {rank}: Set CUDA device to {actual_local_rank} (torch.cuda.current_device() = {torch.cuda.current_device()})",
                 rank=rank,
             )
+            print(f"[DEBUG] Rank {rank}: About to init process group", flush=True)
         else:
             if self.world_size > 1:
                 log_debug(
@@ -127,6 +132,7 @@ class ModelRunner:
                     world_size=self.world_size,
                     rank=rank,
                 )
+                print(f"[DEBUG] Rank {rank}: Process group initialized", flush=True)
                 log_debug(
                     "model_runner",
                     f"Rank {rank} (local_rank={local_rank}) Distributed environment initialized",
@@ -156,7 +162,7 @@ class ModelRunner:
                 )
                 dist.init_process_group(
                     "nccl",
-                    "tcp://localhost:2333",
+                    f"tcp://{self.config.master_addr}:{self.config.master_port}",
                     world_size=self.world_size,
                     rank=rank,
                 )
@@ -168,7 +174,9 @@ class ModelRunner:
         self._update(hf_config, config=config)
 
         self.model = MODELS_MAPPING[hf_config.model_type](hf_config)
+        print(f"[DEBUG] Rank {rank}: Model created", flush=True)
         # load_model(self.model, config.model)
+        print(f"[DEBUG] Rank {rank}: About to load weights...", flush=True)
         self.model.load_weights(
             config=hf_config,
             model_path=config.model,
@@ -192,31 +200,21 @@ class ModelRunner:
                 rank=self.rank,
             )
 
-        # 检测是否为 MoE 模型，目前原生 MoE 模型的动态路由不兼容 CUDA Graph
-        # 但如果开启了 Triton MoE，则支持 CUDA Graph
-        # 注意：开启 EP (enable_epmoe=True) 时，即使使用了 Triton 也不支持 CUDA Graph
+        # 检测是否为 MoE 模型
         is_moe = hf_config.model_type in ["qwen3_moe", "deepseek_v3"]
         if is_moe and not self.enforce_eager:
             enable_epmoe = getattr(hf_config, "enable_epmoe", False)
-            if enable_epmoe:
+            if enable_epmoe or not config.use_triton_moe:
                 log_info(
                     "model_runner",
-                    f"Model type {hf_config.model_type} with EP (ep_size={getattr(hf_config, 'ep_size', 1)}) detected. "
-                    "CUDA Graph is not supported for EP MoE, disabling it.",
-                    rank=self.rank,
-                )
-                self.enforce_eager = True
-            elif not config.use_triton_moe:
-                log_info(
-                    "model_runner",
-                    f"Model type {hf_config.model_type} detected. Native MoE is not supported for CUDA Graph, disabling it. "
-                    "Set use_triton_moe=True to enable CUDA Graph for MoE.",
+                    f"Model type {hf_config.model_type} with EP detected. CUDA Graph is not supported, disabling it.",
                     rank=self.rank,
                 )
                 self.enforce_eager = True
 
         if not self.enforce_eager:
             self.capture_cudagraph()
+
         torch.set_default_device("cpu")
         torch.set_default_dtype(default_dtype)
 
@@ -273,6 +271,12 @@ class ModelRunner:
             f"Rank {self.rank} ModelRunner exit completed",
             rank=self.rank,
         )
+
+    def set_enforce_eager(self, value: bool):
+        self.enforce_eager = value
+
+    def get_config_attr(self, name: str):
+        return getattr(self.config, name)
 
     def loop(self):
         # 在分布式环境中，非主rank等待主rank的指令
@@ -436,8 +440,11 @@ class ModelRunner:
             int(total * config.gpu_memory_utilization - used - peak + current)
             // block_bytes
         )
-        print(
-            f"block_bytes: {block_bytes}, free mem: {int(total * config.gpu_memory_utilization - used - peak + current)}, num_kvcache_blocks: {config.num_kvcache_blocks}"
+
+        log_info(
+            "allocate_kv_cache",
+            f"block_bytes: {block_bytes}, free mem: {int(total * config.gpu_memory_utilization - used - peak + current)}, num_kvcache_blocks: {config.num_kvcache_blocks}",
+            rank=self.rank,
         )
         assert config.num_kvcache_blocks > 0
         self.kv_cache = torch.zeros(
@@ -593,7 +600,7 @@ class ModelRunner:
             )  # 每次添加单个token，上一次推理出的词作为输入
             positions.append(len(seq))  # 位置是动态那个动态的值
             context_lens.append(len(seq))  # context_lens 记录每一个seq 的动态长度
-            # 告诉 kernel「新 token → KV Cache 位置」，decode做完生成新的token时，只是生成了token，但是还没写入k,vcache，所以需要
+            # 告诉 kernel「新 token → KV Cache 位置」，decode做完生成新的token时，只是生成了token，但是还没写入 KV cache，所以需要
             # 在下一次forward的时候，写入kvcache，所以就需要给出的kvcache的位置-1
             """
             看一下 decode 的时序（结合 Scheduler 和 ModelRunner.prepare_decode）：
@@ -693,6 +700,38 @@ class ModelRunner:
             graph.replay()
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
+    def export_kv_cache(self, seqs: list[Sequence]) -> dict[int, torch.Tensor]:
+        """
+        导出指定序列的 KV Cache 数据。
+        返回一个字典：seq_id -> KV tensor (2, layers, num_blocks, block_size, heads, head_dim)
+        """
+        results = {}
+        for seq in seqs:
+            if not seq.block_table:
+                continue
+            # 提取该序列关联的所有物理块数据
+            # self.kv_cache shape: (2, layers, total_blocks, block_size, heads, head_dim)
+            block_ids = torch.tensor(seq.block_table, device=self.kv_cache.device)
+            # (2, layers, len(block_ids), block_size, heads, head_dim)
+            seq_kv_data = self.kv_cache.index_select(2, block_ids)
+            results[seq.seq_id] = seq_kv_data.cpu()  # 转移到 CPU 准备网络传输
+        return results
+
+    def import_kv_cache(self, seq: Sequence, kv_data: torch.Tensor):
+        """
+        将外部传入的 KV Cache 数据导入本地物理块。
+        kv_data shape: (2, layers, num_blocks, block_size, heads, head_dim)
+        """
+        if not seq.block_table:
+            raise RuntimeError(
+                f"Sequence {seq.seq_id} has no block table allocated for import"
+            )
+
+        assert len(seq.block_table) == kv_data.size(2)
+
+        block_ids = torch.tensor(seq.block_table, device=self.kv_cache.device)
+        self.kv_cache.index_copy_(2, block_ids, kv_data.to(self.kv_cache.device))
+
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
         input_ids, positions = (
             self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
@@ -747,7 +786,9 @@ class ModelRunner:
         block_tables = torch.zeros(
             max_bs, max_num_blocks, dtype=torch.int32, device=device
         )
-        outputs = torch.zeros(max_bs, hf_config.hidden_size, device=device)
+        outputs = torch.zeros(
+            max_bs, hf_config.hidden_size, dtype=hf_config.dtype, device=device
+        )
         self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
         self.graphs = {}
         self.graph_pool = None

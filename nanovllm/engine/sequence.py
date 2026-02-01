@@ -83,24 +83,21 @@ class Sequence:
         self.num_tokens += 1
 
     def __getstate__(self):
-        return (
-            self.num_tokens,
-            self.num_prompt_tokens,
-            self.num_cached_tokens,
-            self.num_prefilled_tokens,
-            self.block_table,
-            self.token_ids if self.num_completion_tokens == 0 else self.last_token,
-        )
+        return {
+            "seq_id": self.seq_id,
+            "status": self.status,
+            "token_ids": self.token_ids,
+            "num_tokens": self.num_tokens,
+            "num_prompt_tokens": self.num_prompt_tokens,
+            "num_cached_tokens": self.num_cached_tokens,
+            "num_prefilled_tokens": self.num_prefilled_tokens,
+            "block_table": self.block_table,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "ignore_eos": self.ignore_eos,
+        }
 
     def __setstate__(self, state):
-        (
-            self.num_tokens,
-            self.num_prompt_tokens,
-            self.num_cached_tokens,
-            self.num_prefilled_tokens,
-            self.block_table,
-        ) = state[:-1]
-        if self.num_completion_tokens == 0:
-            self.token_ids = state[-1]
-        else:
-            self.last_token = state[-1]
+        for k, v in state.items():
+            setattr(self, k, v)
+        self.last_token = self.token_ids[-1] if self.token_ids else None

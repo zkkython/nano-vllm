@@ -7,14 +7,12 @@ import torch
 import torch.multiprocessing as mp
 import os
 import torch.distributed as dist
-from nanovllm.config import Config
+from nanovllm.config import Config, EngineRole
 from nanovllm.sampling_params import SamplingParams
-from nanovllm.engine.sequence import Sequence
+from nanovllm.engine.sequence import Sequence, SequenceStatus
 from nanovllm.engine.scheduler import Scheduler
 from nanovllm.engine.model_runner import ModelRunner
-import logging
-
-log = logging.getLogger(__name__)
+from nanovllm.log_config import log_info
 
 
 class LLMEngine:
@@ -29,7 +27,25 @@ class LLMEngine:
             config_kwargs["master_port"] = master_port
         config = Config(model, **config_kwargs)
 
-        # 检查是否已经通过torchrun等方式启动了分布式环境
+        # 1. 优先初始化 Scheduler 和 KVTransferAgent，确保端口尽早开启
+        self.scheduler = Scheduler(config)
+        self.kv_transfer_agent = None
+        if config.engine_role != EngineRole.SINGLE:
+            # 使用 Mooncake 传输
+            from nanovllm.engine.kv_transfer_mooncake import MooncakeTransferAgent
+
+            print(
+                f"[DEBUG] Initializing MooncakeTransferAgent for role: {config.engine_role}",
+                flush=True,
+            )
+            self.kv_transfer_agent = MooncakeTransferAgent(config, self.scheduler)
+            print(f"[DEBUG] MooncakeTransferAgent initialized", flush=True)
+
+        # 2. 检查并初始化分布式环境/ModelRunner
+        print(
+            f"[DEBUG] About to initialize ModelRunner, tensor_parallel_size={config.tensor_parallel_size}",
+            flush=True,
+        )
         if dist.is_available() and dist.is_initialized():
             print("[DEBUG] Distributed environment detected", flush=True)
             # 如果已经初始化了分布式环境，使用现有的配置
@@ -52,49 +68,74 @@ class LLMEngine:
             # 只在rank 0上启动其他rank的进程（单机多卡情况）
             # 或者在分布式环境中每个rank都运行自己的ModelRunner
             self.model_runner = ModelRunner(config, rank, local_rank)
+            print(f"[DEBUG] ModelRunner initialized for rank {rank}", flush=True)
         else:
             # 否则使用原来的多进程方式（主要用于单机多卡）
             if config.tensor_parallel_size > 1:
+                print(
+                    f"[DEBUG] Starting subprocesses for TP={config.tensor_parallel_size}",
+                    flush=True,
+                )
                 # 设置环境变量，以便子进程可以访问
                 os.environ["MASTER_ADDR"] = config.master_addr
                 os.environ["MASTER_PORT"] = str(config.master_port)
                 os.environ["WORLD_SIZE"] = str(config.tensor_parallel_size)
 
+                # 获取主进程绑定的设备索引作为偏移量
+                num_local_gpus = (
+                    torch.cuda.device_count() if torch.cuda.is_available() else 1
+                )
+                base_device_id = config.local_rank
+
                 self.ps = []
 
                 ctx = mp.get_context("spawn")
                 for i in range(1, config.tensor_parallel_size):
-                    # 单机多卡时，local_rank应该限制在本地GPU范围内
-                    # 如果i超出了本地GPU数量，则使用i % 本地GPU数
-                    num_local_gpus = (
-                        torch.cuda.device_count() if torch.cuda.is_available() else 1
+                    # 子进程的设备索引应基于 base_device_id 递增
+                    local_rank = (base_device_id + i) % num_local_gpus
+                    print(
+                        f"[DEBUG] Starting subprocess for rank {i} with device {local_rank}",
+                        flush=True,
                     )
-                    local_rank = i % num_local_gpus
                     process = ctx.Process(
                         target=ModelRunner, args=(config, i, local_rank)
                     )
                     process.start()
                     self.ps.append(process)
+                    print(
+                        f"[DEBUG] Subprocess started: rank={i}, pid={process.pid}",
+                        flush=True,
+                    )
 
-                # 主进程也应使用正确的local_rank
-                num_local_gpus = (
-                    torch.cuda.device_count() if torch.cuda.is_available() else 1
+                # 主进程也应使用正确的 local_rank
+                main_local_rank = base_device_id % num_local_gpus
+                print(
+                    f"[DEBUG] Main process rank 0 using device {main_local_rank}",
+                    flush=True,
                 )
-                main_local_rank = 0 % num_local_gpus  # 对于rank 0，local_rank总是0
                 self.model_runner = ModelRunner(config, 0, main_local_rank)
+                print(f"[DEBUG] Main process ModelRunner initialized", flush=True)
             else:
-                # 单GPU情况也要使用正确的local_rank
+                # 单 GPU 情况也要使用正确的local_rank
                 num_local_gpus = (
                     torch.cuda.device_count() if torch.cuda.is_available() else 1
                 )
-                main_local_rank = 0 % num_local_gpus  # 对于rank 0，local_rank总是0
+                main_local_rank = config.local_rank % num_local_gpus
+                print(f"[DEBUG] Single GPU mode, device={main_local_rank}", flush=True)
                 self.model_runner = ModelRunner(config, 0, main_local_rank)
+                print(f"[DEBUG] Single GPU ModelRunner initialized", flush=True)
 
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
-        self.scheduler = Scheduler(config)
+        self.config = config
         self.world_size = config.tensor_parallel_size
         self._exited = False
+
+        # 3. 同步 ModelRunner 计算出的 num_kvcache_blocks 到 Scheduler/BlockManager
+        actual_num_blocks = self.model_runner.call(
+            "get_config_attr", "num_kvcache_blocks"
+        )
+        self.scheduler.block_manager.update_num_blocks(actual_num_blocks)
 
         # 注册自动退出处理 - 使用实例编号确保只注册一次
         import sys
@@ -129,9 +170,45 @@ class LLMEngine:
         self.scheduler.add(seq)
 
     def step(self):
+        # Decode 节点可能需要从 KV Transfer Agent 接收新的 Sequence
+        if self.config.engine_role == EngineRole.DECODE and self.kv_transfer_agent:
+            new_seq_items = self.kv_transfer_agent.recv_sequences()
+            for seq, kv_data in new_seq_items:
+                # 关键：接收到的 seq.block_table 指向的是 Prefill 节点的物理块 ID，在当前节点无效
+                seq.block_table = []
+                # 在 Decode 节点重新分配本地物理块
+                self.scheduler.block_manager.allocate(seq)
+                # 将数据导入本地分配的物理块
+                self.model_runner.call("import_kv_cache", seq, kv_data)
+                self.scheduler.add_running_sequence(seq)
+
         seqs, is_prefill = self.scheduler.schedule()
+        if not seqs:
+            return [], 0
+
         token_ids = self.model_runner.call("run", seqs, is_prefill)
         self.scheduler.postprocess(seqs, token_ids)
+
+        # 校验产出的kvcache是否存在问题
+        # finished_prefill_seqs = [s for s in seqs if s.status == SequenceStatus.RUNNING]
+        # for seq in finished_prefill_seqs:
+        #     log_info("llm_engine", f"seq_id = {seq.seq_id}, kv data={seq.token_ids}")
+
+        # Prefill 节点完成后需要发送 KV Cache
+        if self.config.engine_role == EngineRole.PREFILL and is_prefill:
+            finished_prefill_seqs = [
+                s for s in seqs if s.status == SequenceStatus.RUNNING
+            ]
+            if finished_prefill_seqs and self.kv_transfer_agent:
+                # 导出 KV blocks 数据
+                kv_data = self.model_runner.call(
+                    "export_kv_cache", finished_prefill_seqs
+                )
+                self.kv_transfer_agent.send_sequences(finished_prefill_seqs, kv_data)
+                # Prefill 节点在发送完后可以清理掉这些 sequence
+                for seq in finished_prefill_seqs:
+                    self.scheduler.remove_sequence(seq)
+
         outputs = [
             (seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished
         ]
@@ -165,7 +242,7 @@ class LLMEngine:
                     prefill_throughput = num_tokens / (now - t)
                 elif num_tokens < 0:
                     decode_throughput = -num_tokens / (now - t)
-                
+
                 # 限制刷新频率，避免在非 TTY 环境下产生大量日志
                 if now - last_update_time >= 0.1:
                     pbar.set_postfix(

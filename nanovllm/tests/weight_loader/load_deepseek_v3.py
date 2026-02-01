@@ -2,7 +2,7 @@
 
 import torch.distributed as dist
 
-from nanovllm.models.deepseek_v3 import DeepSeekV3Config, DeepSeekV3ForCausalLM
+from nanovllm.models.deepseek_v3_origin import DeepSeekV3Config, DeepSeekV3ForCausalLM
 
 
 def example_load_deepseek_v3():

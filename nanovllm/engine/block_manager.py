@@ -26,12 +26,20 @@ class Block:
 class BlockManager:
 
     def __init__(self, num_blocks: int, block_size: int):
-        assert num_blocks > 0
         self.block_size = block_size
-        self.blocks: list[Block] = [Block(i) for i in range(num_blocks)]
+        self.num_blocks = num_blocks
+        self.blocks: list[Block] = [Block(i) for i in range(max(0, num_blocks))]
         self.hash_to_block_id: dict[int, int] = dict()
-        self.free_block_ids: deque[int] = deque(range(num_blocks))
+        self.free_block_ids: deque[int] = deque(range(max(0, num_blocks)))
         self.used_block_ids: set[int] = set()
+
+    def update_num_blocks(self, num_blocks: int):
+        """动态更新块数量（用于 ModelRunner 计算完显存后的同步）"""
+        if self.num_blocks > 0:
+            return
+        self.num_blocks = num_blocks
+        self.blocks = [Block(i) for i in range(num_blocks)]
+        self.free_block_ids = deque(range(num_blocks))
 
     @classmethod
     def compute_hash(cls, token_ids: list[int], prefix: int = -1):
@@ -60,6 +68,9 @@ class BlockManager:
 
     def allocate(self, seq: Sequence):
         assert not seq.block_table
+        # 在 PD 分离模式下，如果 Sequence 是接收而来的，它可能已经有 num_cached_tokens（来自 Prefill）
+        # 我们需要重置它，因为在当前节点它是全新的
+        seq.num_cached_tokens = 0
         h = -1
         cache_miss = False
         for i in range(seq.num_blocks):

@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 
-from nanovllm.models.deepseek_v3 import DeepSeekV3ForCausalLM
+from nanovllm.models.deepseek_v3 import DeepseekV3ForCausalLM
 from nanovllm import LLM, SamplingParams
 from transformers import AutoConfig
 
@@ -35,7 +35,7 @@ def check():
             )
 
     print_gpu_memory("Before model init")
-    model = DeepSeekV3ForCausalLM(config)
+    model = DeepseekV3ForCausalLM(config)
     print_gpu_memory("After model init (Empty)")
 
     # 只加载前 2 层进行快速测试
@@ -71,14 +71,11 @@ def check():
 
 
 def deepseek_v3_partial_layer_infer():
-    # torch.set_default_dtype(torch.bfloat16)
 
-    """示例：只加载前 2 层进行快速验证"""
     print("=" * 70)
     print("Example: Partial Layer Loading for Quick Debugging")
     print("=" * 70)
 
-    # 只加载前 2 层（layer 0 和 layer 1）
     # 这样可以大幅减少初始化时间和显存占用
     llm = LLM(
         model_path,
@@ -88,20 +85,21 @@ def deepseek_v3_partial_layer_infer():
         gpu_memory_utilization=0.88,
         quantization="fp8",
         tensor_parallel_size=8,
-        # load_partial_layers=61,  # 关键参数：只加载前 2 层
+        # load_partial_layers=61,
         enforce_eager=True,
     )
 
     print("\n模型加载完成！")
-    print("注意：只加载了前 2 层，推理结果仅供调试参考，不代表真实效果。\n")
 
     # 简单推理测试
-    prompt = "你好"
+    prompt = "请用中文介绍你自己"
     print(f"输入: {prompt}")
 
-    outputs = llm.generate([prompt], SamplingParams(temperature=0.6, max_tokens=50))
-    print(f"输出: {outputs[0]['text']}")
-    print("\n说明：由于只加载了 2 层，输出通常是无意义的，但可以验证：")
+    outputs = llm.generate([prompt], SamplingParams(temperature=0.7, max_tokens=100))
+    for output in outputs:
+        print(f"输出: {output['text']}")
+
+    print("\n验证项:")
     print("  - 权重加载流程是否正确")
     print("  - 模型 forward 是否能正常运行")
     print("  - 参数形状是否匹配")

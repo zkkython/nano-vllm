@@ -1,4 +1,5 @@
 import os
+from enum import Enum
 from dataclasses import dataclass
 from transformers import AutoConfig
 from typing import Optional
@@ -6,11 +7,24 @@ from typing import Optional
 from nanovllm.log_config import LogConfig
 
 
+class EngineRole(Enum):
+    PREFILL = "prefill"
+    DECODE = "decode"
+    SINGLE = "single"  # 原有的单节点模式
+
+
 @dataclass
 class Config:
     model: str
+    engine_role: EngineRole = EngineRole.SINGLE
+    # KV Transfer 配置
+    kv_transfer_port: int = 2334
+    kv_transfer_address: str = "localhost"
+
     max_num_batched_tokens: int = 16384
     max_num_seqs: int = 256
+    max_num_seqs_prefill: int | None = None  # Prefill 阶段最大 batch size
+    max_num_seqs_decode: int | None = None  # Decode 阶段最大 batch size
     max_model_len: int = (
         4096  # max_model_len确实代表了单个请求（sequence）的最大长度限制，这个长度包括了prefill阶段的输入token数量加上后续decode阶段生成的token数量的总和
     )
@@ -100,3 +114,9 @@ class Config:
             assert (
                 self.max_num_batched_tokens >= self.max_model_len
             ), "max_num_batched_tokens must be >= max_model_len when chunked_prefill is disabled"
+
+        # PD 分离 batch size 默认值处理
+        if self.max_num_seqs_prefill is None:
+            self.max_num_seqs_prefill = self.max_num_seqs
+        if self.max_num_seqs_decode is None:
+            self.max_num_seqs_decode = self.max_num_seqs
